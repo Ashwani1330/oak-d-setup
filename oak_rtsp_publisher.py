@@ -1,31 +1,26 @@
 #!/usr/bin/env python3
-import subprocess
-import signal
-import threading
+import subprocess, signal, threading, time
 import depthai as dai
 
 WIDTH, HEIGHT = 640, 400
 FPS = 30
-RTSP_URL = "rtsp://192.168.1.213:8554/oak"   # ns_srv IP
+RTSP_URL = "rtsp://192.168.1.185:8554/oak"
+# RTSP_URL = "rtsp://10.241.166.98:8554/oak"
 
 quit_event = threading.Event()
-signal.signal(signal.SIGINT, lambda *_: quit_event.set())
+signal.signal(signal.SIGINT,  lambda *_: quit_event.set())
 signal.signal(signal.SIGTERM, lambda *_: quit_event.set())
 
 ffmpeg_cmd = [
-    "ffmpeg",
-    "-loglevel", "warning",
-
-    # raw H.264 from stdin
+    "ffmpeg", "-loglevel", "warning",
     "-r", str(FPS),
-    "-f", "h264",
-    "-i", "pipe:0",
-
+    "-f", "h264", "-i", "pipe:0",
     "-c:v", "copy",
-
-    # publish via RTSP, but RTP over UDP (lower latency than TCP interleaving)
     "-f", "rtsp",
     "-rtsp_transport", "udp",
+    "-pkt_size", "1200",
+    "-muxdelay", "0",
+    "-muxpreload", "0",
     RTSP_URL,
 ]
 
@@ -43,31 +38,26 @@ def main():
         )
 
         enc = pipeline.create(dai.node.VideoEncoder).build(
-            cam_out,
-            frameRate=FPS,
+            cam_out, frameRate=FPS,
             profile=dai.VideoEncoderProperties.Profile.H264_MAIN,
         )
 
-        # Robotics-oriented encoder knobs (if supported in your DepthAI build)
-        try:
-            enc.setNumBFrames(0)
-        except Exception:
-            pass
-        try:
-            enc.setKeyframeFrequency(FPS)   # keyframe every 1s
-        except Exception:
-            pass
-        try:
-            enc.setBitrateKbps(2000)        # tune: 1500–5000 depending on Wi-Fi
-        except Exception:
-            pass
+        try: enc.setNumBFrames(0)
+        except Exception: pass
+        try: enc.setKeyframeFrequency(10)   # ~0.33s
+        except Exception: pass
+        try: enc.setBitrateKbps(1500)       # start lower; raise if stable
+        except Exception: pass
 
-        q = enc.out.createOutputQueue(maxSize=60, blocking=True)
+        q = enc.out.createOutputQueue(maxSize=1, blocking=False)
 
         pipeline.start()
         try:
             while pipeline.isRunning() and not quit_event.is_set():
-                pkt = q.get()
+                pkt = q.tryGet()
+                if pkt is None:
+                    time.sleep(0.001)
+                    continue
                 try:
                     proc.stdin.write(pkt.getData().tobytes())
                 except BrokenPipeError:
@@ -82,23 +72,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-
-'''
-ffmpeg_cmd = [
-    "ffmpeg",
-    "-loglevel", "info",
-    "-fflags", "+genpts",
-    "-use_wallclock_as_timestamps", "1",
-    "-r", str(FPS),
-    "-f", "h264",
-    "-i", "pipe:0",
-    "-c:v", "copy",
-    "-f", "rtsp",
-    "-rtsp_transport", "tcp",
-    "-muxdelay", "0",
-    "-muxpreload", "0",
-    RTSP_URL,
-]
-
-'''
