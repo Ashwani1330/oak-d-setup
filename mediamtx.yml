@@ -1,0 +1,7 @@
+logLevel: info
+
+pathDefaults:
+  source: publisher
+
+paths:
+  oak: {}
