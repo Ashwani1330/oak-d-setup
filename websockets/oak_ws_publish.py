@@ -11,7 +11,8 @@ import websockets
 WIDTH, HEIGHT = 640, 400
 FPS = 30
 
-WS_PUB_URL = "ws://192.168.1.182:8765/pub"  # server ingest endpoint
+# WS_PUB_URL = "ws://192.168.1.182:8765/pub"  # server ingest endpoint
+WS_PUB_URL = "ws://192.168.1.100:8765/pub"  # server ingest endpoint
 
 quit_event = threading.Event()
 signal.signal(signal.SIGINT,  lambda *_: quit_event.set())

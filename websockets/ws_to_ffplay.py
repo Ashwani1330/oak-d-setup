@@ -4,7 +4,8 @@ import struct
 import subprocess
 import websockets
 
-WS_SUB_URL = "ws://192.168.1.182:8765/sub"
+# WS_SUB_URL = "ws://192.168.1.182:8765/sub"
+WS_SUB_URL = "ws://192.168.1.100:8765/sub"
 
 async def main():
     # ffplay reads raw H264 from stdin
