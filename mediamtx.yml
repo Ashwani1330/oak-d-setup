@@ -1,7 +1,13 @@
-logLevel: info
+# reduce fragmentation + match ffmpeg
+udpMaxPayloadSize: 1200  # default is 1472 :contentReference[oaicite:1]{index=1}
 
-pathDefaults:
-  source: publisher
+# reduce UDP drops (increase OS recv buffer used by MTX)
+udpReadBufferSize: 1048576  # 1MB (try 4MB if still losing)
+
+# keep outgoing queue modest (avoid building delay under congestion)
+writeQueueSize: 256  # default 512 :contentReference[oaicite:2]{index=2}
+
+rtspTransports: [udp]  # optional: avoid TCP fallback :contentReference[oaicite:3]{index=3}
 
 paths:
   oak: {}
