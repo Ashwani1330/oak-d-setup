@@ -4,7 +4,7 @@ import depthai as dai
 
 WIDTH, HEIGHT = 640, 400
 FPS = 30
-RTSP_URL = "rtsp://192.168.1.182:8554/oak"
+RTSP_URL = "rtsp://192.168.1.100:8554/oak"
 # RTSP_URL = "rtsp://10.241.166.98:8554/oak"
 
 quit_event = threading.Event()
