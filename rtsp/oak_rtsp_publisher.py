@@ -4,7 +4,7 @@ import depthai as dai
 
 WIDTH, HEIGHT = 640, 400
 FPS = 30
-RTSP_URL = "rtsp://192.168.1.185:8554/oak"
+RTSP_URL = "rtsp://192.168.1.182:8554/oak"
 # RTSP_URL = "rtsp://10.241.166.98:8554/oak"
 
 quit_event = threading.Event()
@@ -58,6 +58,13 @@ def main():
                 if pkt is None:
                     time.sleep(0.001)
                     continue
+
+                while True:
+                    newer = q.tryGet()
+                    if newer is None:
+                        break
+                    pkt = newer
+
                 try:
                     proc.stdin.write(pkt.getData().tobytes())
                 except BrokenPipeError:
