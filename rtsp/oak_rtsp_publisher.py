@@ -4,42 +4,61 @@ import depthai as dai
 
 W, H = 640, 400
 FPS = 30
-RTSP_URL = "rtsp://192.168.1.100:8554/oak"
+RTSP_URL = "rtsp://192.168.1.182:8554/oak"
 
 quit_event = threading.Event()
 signal.signal(signal.SIGINT,  lambda *_: quit_event.set())
 signal.signal(signal.SIGTERM, lambda *_: quit_event.set())
 
+RTP_TICKS = 90000 // FPS  # 3000 for 30fps
+
+ffmpeg_cmd = [
+    "ffmpeg", "-nostdin", "-loglevel", "warning",
+
+    "-f", "h264", "-i", "pipe:0",
+    "-c:v", "copy",
+
+    # force monotonic timestamps for RTP/RTSP
+    "-bsf:v", f"setts=ts=N*{RTP_TICKS}:duration={RTP_TICKS}:time_base=1/90000",
+
+    "-flush_packets", "1",
+    "-muxdelay", "0", "-muxpreload", "0",
+
+    "-f", "rtsp",
+    "-rtsp_transport", "udp",
+    "-pkt_size", "1200",
+    RTSP_URL,
+]
+'''
 ffmpeg_cmd = [
     "ffmpeg", "-loglevel", "warning",
     "-nostdin",
 
-    # IMPORTANT: reduce buffering / generate timestamps for raw H.264 from pipe
-    "-fflags", "+genpts+nobuffer",
+    # force input timing (don't let ffmpeg guess)
+    "-fflags", "+genpts",
     "-use_wallclock_as_timestamps", "1",
-    "-analyzeduration", "0",
+    "-r", str(FPS),              # tell ffmpeg the intended fps
     "-probesize", "32",
+    "-analyzeduration", "0",
 
-    # input is raw H.264 access units from DepthAI encoder
+    # raw H264 from stdin
     "-f", "h264",
-    "-r", str(FPS),
     "-i", "pipe:0",
 
-    # no re-encode
     "-c:v", "copy",
 
-    # push ASAP
+    # push immediately
     "-flush_packets", "1",
-
-    # RTSP control on TCP, RTP media over UDP
-    "-f", "rtsp",
-    "-rtsp_transport", "udp",
-    "-pkt_size", "1200",
     "-muxdelay", "0",
     "-muxpreload", "0",
 
+    "-f", "rtsp",
+    "-rtsp_transport", "udp",
+    "-pkt_size", "1200",
     RTSP_URL,
 ]
+
+'''
 
 def main():
     proc = subprocess.Popen(ffmpeg_cmd, stdin=subprocess.PIPE, bufsize=0)
