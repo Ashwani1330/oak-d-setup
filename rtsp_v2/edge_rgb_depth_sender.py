@@ -18,13 +18,15 @@ COMP_ZLIB = 3
 MAGIC_CAL = b"CAL0"
 HDR_CAL = struct.Struct("<4sBQHH")       # magic, ver(u8), ts_ns(u64), w(u16), h(u16)
 CAL_FLOATS = struct.Struct("<30fB")      # 30 floats + units byte
-UNITS_CM = 1  # depthai extrinsics translation is in centimeters
+UNITS_CM = 1  # DepthAI extrinsics translation is in centimeters
 
 quit_event = threading.Event()
+
 
 def install_signals():
     signal.signal(signal.SIGINT,  lambda *_: quit_event.set())
     signal.signal(signal.SIGTERM, lambda *_: quit_event.set())
+
 
 def make_ffmpeg_cmd(rtsp_url: str, fps: int, transport: str):
     rtp_ticks = 90000 // fps
@@ -42,10 +44,10 @@ def make_ffmpeg_cmd(rtsp_url: str, fps: int, transport: str):
         rtsp_url,
     ]
 
+
 class DepthCompressor:
     def __init__(self, mode: str):
         self.mode = mode
-        self.comp_id = COMP_NONE
         self._zstd_c = None
         self._lz4 = None
 
@@ -53,26 +55,21 @@ class DepthCompressor:
             try:
                 import zstandard as zstd
                 self._zstd_c = zstd.ZstdCompressor(level=1)
-                self.comp_id = COMP_ZSTD
             except Exception:
                 self.mode = "none"
-                self.comp_id = COMP_NONE
 
         elif mode == "lz4":
             try:
                 import lz4.frame
                 self._lz4 = lz4.frame
-                self.comp_id = COMP_LZ4
             except Exception:
                 self.mode = "none"
-                self.comp_id = COMP_NONE
 
         elif mode == "zlib":
-            self.comp_id = COMP_ZLIB
+            pass
 
         else:
             self.mode = "none"
-            self.comp_id = COMP_NONE
 
     def compress(self, raw: bytes) -> tuple[bytes, int]:
         if self.mode == "none":
@@ -85,14 +82,25 @@ class DepthCompressor:
             return zlib.compress(raw, level=1), COMP_ZLIB
         return raw, COMP_NONE
 
+
 def build_cal_packet(w: int, h: int) -> bytes:
     # Read calibration once (make sure you’re reading from the correct device if multiple OAKs exist!)
     with dai.Device() as device:
         calib = device.readCalibration()
-        K_rgb = np.array(calib.getCameraIntrinsics(dai.CameraBoardSocket.CAM_A, w, h), dtype=np.float32)
-        K_right = np.array(calib.getCameraIntrinsics(dai.CameraBoardSocket.CAM_C, w, h), dtype=np.float32)
 
-        T = np.array(calib.getCameraExtrinsics(dai.CameraBoardSocket.CAM_C, dai.CameraBoardSocket.CAM_A), dtype=np.float32)
+        K_rgb = np.array(
+            calib.getCameraIntrinsics(dai.CameraBoardSocket.CAM_A, w, h),
+            dtype=np.float32
+        )
+        K_right = np.array(
+            calib.getCameraIntrinsics(dai.CameraBoardSocket.CAM_C, w, h),
+            dtype=np.float32
+        )
+
+        T = np.array(
+            calib.getCameraExtrinsics(dai.CameraBoardSocket.CAM_C, dai.CameraBoardSocket.CAM_A),
+            dtype=np.float32
+        )
         T_3x4 = T[:3, :4]
 
         payload_floats = list(K_rgb.reshape(-1)) + list(K_right.reshape(-1)) + list(T_3x4.reshape(-1))
@@ -101,45 +109,66 @@ def build_cal_packet(w: int, h: int) -> bytes:
     ts_ns = time.time_ns()
     return HDR_CAL.pack(MAGIC_CAL, 1, ts_ns, w, h) + CAL_FLOATS.pack(*payload_floats, UNITS_CM)
 
-def configure_stereo_filters(stereo: dai.node.StereoDepth, min_mm: int, max_mm: int):
+
+def configure_stereo_filters(stereo: dai.node.StereoDepth, min_mm: int, max_mm: int, force_decimation_1: bool):
     """
-    Uses DepthAI StereoDepth postProcessing fields as documented in Luxonis examples:
-    speckle/temporal/spatial/threshold/decimation etc.
+    IMPORTANT for your DepthAI version:
+    stereo.initialConfig is already a StereoDepthConfig (no .get()/.set()).
     """
+    # Preset first
     try:
-        # A good “robotics-ish” baseline preset (if available)
+        stereo.setDefaultProfilePreset(dai.node.StereoDepth.PresetMode.ROBOTICS)
+    except Exception:
         try:
-            stereo.setDefaultProfilePreset(dai.node.StereoDepth.PresetMode.ROBOTICS)
-        except Exception:
             stereo.setDefaultProfilePreset(dai.node.StereoDepth.PresetMode.HIGH_DENSITY)
-
-        stereo.initialConfig.setMedianFilter(dai.MedianFilter.KERNEL_7x7)
-
-        cfg = stereo.initialConfig.get()
-        cfg.postProcessing.speckleFilter.enable = True
-        cfg.postProcessing.speckleFilter.speckleRange = 50
-
-        cfg.postProcessing.temporalFilter.enable = True
-        # alpha: 1 = no filter, lower = more smoothing
-        try:
-            cfg.postProcessing.temporalFilter.alpha = 0.4
         except Exception:
             pass
 
+    # Median filter
+    try:
+        stereo.initialConfig.setMedianFilter(dai.MedianFilter.KERNEL_7x7)
+    except Exception:
+        pass
+
+    cfg = stereo.initialConfig  # <-- direct config object (NO .get())
+
+    # Disable decimation (this is the most common cause of 320x200)
+    if force_decimation_1:
+        try:
+            cfg.postProcessing.decimationFilter.decimationFactor = 1
+        except Exception as e:
+            print("[WARN] cannot set decimationFactor=1:", e)
+
+    # Range gating (keep for removing far walls; don't set min too tiny or you'll get noise)
+    try:
+        cfg.postProcessing.thresholdFilter.minRange = int(min_mm)
+        cfg.postProcessing.thresholdFilter.maxRange = int(max_mm)
+    except Exception:
+        pass
+
+    # Speckle
+    try:
+        cfg.postProcessing.speckleFilter.enable = True
+        cfg.postProcessing.speckleFilter.speckleRange = 50
+    except Exception:
+        pass
+
+    # Temporal
+    try:
+        cfg.postProcessing.temporalFilter.enable = True
+        if hasattr(cfg.postProcessing.temporalFilter, "alpha"):
+            cfg.postProcessing.temporalFilter.alpha = 0.4
+    except Exception:
+        pass
+
+    # Spatial
+    try:
         cfg.postProcessing.spatialFilter.enable = True
         cfg.postProcessing.spatialFilter.holeFillingRadius = 2
         cfg.postProcessing.spatialFilter.numIterations = 1
+    except Exception:
+        pass
 
-        # This is the “remove walls/background by range” hammer:
-        cfg.postProcessing.thresholdFilter.minRange = int(min_mm)
-        cfg.postProcessing.thresholdFilter.maxRange = int(max_mm)
-
-        # Keep decimationFactor=1 unless you intentionally want heavier downsampling
-        cfg.postProcessing.decimationFilter.decimationFactor = 1
-
-        stereo.initialConfig.set(cfg)
-    except Exception as e:
-        print(f"[WARN] Stereo post-processing config not applied: {e}")
 
 def main():
     ap = argparse.ArgumentParser()
@@ -147,22 +176,30 @@ def main():
     ap.add_argument("--h", type=int, default=400)
     ap.add_argument("--fps", type=int, default=30)
     ap.add_argument("--depth-fps", type=int, default=15)
+
     ap.add_argument("--rtsp-url", required=True)
-    ap.add_argument("--rtsp-transport", choices=["udp","tcp"], default="udp")
+    ap.add_argument("--rtsp-transport", choices=["udp", "tcp"], default="udp")
+
     ap.add_argument("--depth-host", required=True)
     ap.add_argument("--depth-port", type=int, required=True)
-    ap.add_argument("--depth-comp", choices=["none","zstd","lz4","zlib"], default="zstd")
-    ap.add_argument("--min-mm", type=int, default=300)
-    ap.add_argument("--max-mm", type=int, default=4000)
-    ap.add_argument("--calib-period-sec", type=float, default=5.0, help="resend CAL0 every N seconds")
+    ap.add_argument("--depth-comp", choices=["none", "zstd", "lz4", "zlib"], default="zstd")
+
+    ap.add_argument("--min-mm", type=int, default=120)
+    ap.add_argument("--max-mm", type=int, default=2500)
+
+    ap.add_argument("--calib-period-sec", type=float, default=5.0)
+    ap.add_argument("--extended-disparity", action="store_true", help="improve close range (good for grasping)")
+    ap.add_argument("--subpixel", action="store_true", help="improve depth precision (may add shimmer)")
+    ap.add_argument("--no-decimation-fix", action="store_true", help="do NOT force decimationFactor=1 (debug)")
     args = ap.parse_args()
 
     install_signals()
 
-    # UDP socket
+    DEST = (args.depth_host, args.depth_port)
+
+    # UDP socket (use sendto: avoids ConnectionRefusedError)
     udp = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     udp.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 4 * 1024 * 1024)
-    udp.connect((args.depth_host, args.depth_port))
 
     cal_pkt = build_cal_packet(args.w, args.h)
     last_cal_send = 0.0
@@ -182,6 +219,11 @@ def main():
         enc = pipeline.create(dai.node.VideoEncoder).build(
             cam_nv12, frameRate=args.fps, profile=dai.VideoEncoderProperties.Profile.H264_MAIN
         )
+        try:
+            enc.setNumBFrames(0)
+        except Exception:
+            pass
+
         q_vid = enc.out.createOutputQueue(maxSize=2, blocking=False)
 
         # ---- Stereo depth (CAM_B/C) ----
@@ -192,9 +234,34 @@ def main():
         outR = right.requestOutput((args.w, args.h), fps=args.depth_fps)
 
         stereo = pipeline.create(dai.node.StereoDepth)
+
+        # Force depth output size if API exists
+        try:
+            stereo.setOutputSize(args.w, args.h)
+        except Exception as e:
+            print("[WARN] stereo.setOutputSize not available:", e)
+
         stereo.setLeftRightCheck(True)
-        stereo.setSubpixel(True)  # disable if you prefer less shimmer / faster response
-        configure_stereo_filters(stereo, args.min_mm, args.max_mm)
+
+        # Close range improvement (grasping)
+        if args.extended_disparity:
+            try:
+                stereo.setExtendedDisparity(True)
+            except Exception as e:
+                print("[WARN] setExtendedDisparity not available:", e)
+
+        # Subpixel improves precision but can add shimmer; optional
+        try:
+            stereo.setSubpixel(bool(args.subpixel))
+        except Exception:
+            pass
+
+        configure_stereo_filters(
+            stereo,
+            min_mm=args.min_mm,
+            max_mm=args.max_mm,
+            force_decimation_1=(not args.no_decimation_fix),
+        )
 
         outL.link(stereo.left)
         outR.link(stereo.right)
@@ -209,11 +276,12 @@ def main():
 
         try:
             while pipeline.isRunning() and not quit_event.is_set():
-                # Periodic calibration resend
                 now = time.monotonic()
+
+                # Periodic calibration resend
                 if now - last_cal_send >= args.calib_period_sec:
                     try:
-                        udp.send(cal_pkt)
+                        udp.sendto(cal_pkt, DEST)
                         last_cal_send = now
                     except Exception:
                         pass
@@ -231,6 +299,7 @@ def main():
                     if proc.poll() is not None:
                         print("ffmpeg exited.")
                         break
+
                     try:
                         proc.stdin.write(pkt.getData().tobytes())
                     except BrokenPipeError:
@@ -248,6 +317,11 @@ def main():
                             dmsg = newer
 
                         depth = dmsg.getFrame().astype(np.uint16, copy=False)
+
+                        # Debug: prove real output size
+                        if (depth_seq % 30) == 0:
+                            print("DEPTH OUTPUT:", depth.shape[1], "x", depth.shape[0])
+
                         raw = depth.tobytes(order="C")
                         payload, comp_id = compressor.compress(raw)
 
@@ -261,7 +335,7 @@ def main():
                                 MAGIC_DPT, depth_seq, idx, count, ts_ns,
                                 depth.shape[1], depth.shape[0], comp_id, len(chunk)
                             )
-                            udp.send(hdr + chunk)
+                            udp.sendto(hdr + chunk, DEST)
 
                         depth_seq = (depth_seq + 1) & 0xFFFFFFFF
 
@@ -277,6 +351,7 @@ def main():
             proc.terminate()
             pipeline.stop()
             pipeline.wait()
+
 
 if __name__ == "__main__":
     main()

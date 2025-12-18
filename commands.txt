@@ -2,3 +2,18 @@ ffplay -rtsp_transport udp \
   -fflags nobuffer -flags low_delay -framedrop \
   -probesize 32 -analyzeduration 0 \
   rtsp://192.168.1.100:8554/oak
+
+# Server
+python3 server_depth_viewer.py --port 9000 --ui --o3d --pcd-stride 2 --voxel 0.005 --min-mm 120 --max-mm 2500 --remove-plane
+
+# Client
+python3 edge_rgb_depth_sender.py \
+  --w 640 --h 400 \
+  --fps 30 --depth-fps 15 \
+  --rtsp-url rtsp://192.168.1.182:8554/oak \
+  --rtsp-transport udp \
+  --depth-host 192.168.1.182 --depth-port 9000 \
+  --depth-comp zstd \
+  --min-mm 120 --max-mm 2500 \
+  --extended-disparity
+# If you want more precision (but possible shimmer), add --subpixel.
