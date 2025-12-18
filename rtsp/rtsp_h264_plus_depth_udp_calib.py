@@ -5,7 +5,7 @@ import numpy as np
 
 W, H = 640, 400
 FPS = 30
-DEPTH_FPS = 15
+DEPTH_FPS = 30
 
 RTSP_URL = "rtsp://192.168.1.182:8554/oak"
 DEPTH_HOST = "192.168.1.182"
