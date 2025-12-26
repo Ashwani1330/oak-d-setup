@@ -17,3 +17,6 @@ python3 edge_rgb_depth_sender.py \
   --min-mm 120 --max-mm 2500 \
   --extended-disparity
 # If you want more precision (but possible shimmer), add --subpixel.
+
+# 800p Mono: Output Depth = $1280 \times 800$
+

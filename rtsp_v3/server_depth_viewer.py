@@ -1,0 +1,314 @@
+#!/usr/bin/env python3
+import argparse, socket, struct, time, zlib
+import numpy as np
+import cv2
+
+# ============================================================
+# QUICK DEBUG CONFIG (edit these, then run with no CLI args)
+# ============================================================
+DEFAULT = dict(
+    BIND="0.0.0.0",
+    PORT=9000,
+    RCVBUF=8_388_608,
+    STALE_MS=120,
+
+    UI=True,
+    O3D=True,
+    O3D_EVERY=1,
+
+    MIN_MM=120,
+    MAX_MM=2500,
+    PCD_STRIDE=2,
+
+    VOXEL=0.005,       # meters (0 disables)
+    REMOVE_PLANE=True, # RANSAC remove dominant plane
+    ROI="",            # "x0,y0,x1,y1"
+)
+
+# ---- DPT0 ----
+MAGIC_DPT = b"DPT0"
+HDR_DPT = struct.Struct("<4sIHHQHHBH")  # magic, seq, idx, cnt, ts_ns, w, h, comp, n
+
+COMP_NONE = 0
+COMP_ZSTD = 1
+COMP_LZ4  = 2
+COMP_ZLIB = 3
+
+# ---- CAL0 ----
+MAGIC_CAL = b"CAL0"
+HDR_CAL = struct.Struct("<4sBQHH")      # magic, ver(u8), ts_ns(u64), w(u16), h(u16)
+CAL_FLOATS = struct.Struct("<30fB")     # 30 floats + units(u8)
+UNITS_CM = 1
+UNITS_M  = 2
+
+
+def add_bool_arg(ap: argparse.ArgumentParser, name: str, default: bool, help_txt: str):
+    dest = name.replace("-", "_")
+    g = ap.add_mutually_exclusive_group(required=False)
+    g.add_argument(f"--{name}", dest=dest, action="store_true", help=help_txt + f" (default={default})")
+    g.add_argument(f"--no-{name}", dest=dest, action="store_false", help="Disable: " + help_txt)
+    ap.set_defaults(**{dest: default})
+
+
+def make_decompressor():
+    zstd_d = None
+    lz4mod = None
+    try:
+        import zstandard as zstd
+        zstd_d = zstd.ZstdDecompressor()
+    except Exception:
+        pass
+    try:
+        import lz4.frame
+        lz4mod = lz4.frame
+    except Exception:
+        pass
+    return zstd_d, lz4mod
+
+
+def decompress(blob: bytes, comp: int, expected: int, zstd_d, lz4mod) -> bytes:
+    if comp == COMP_NONE:
+        return blob
+    if comp == COMP_ZSTD and zstd_d is not None:
+        return zstd_d.decompress(blob, max_output_size=expected)
+    if comp == COMP_LZ4 and lz4mod is not None:
+        return lz4mod.decompress(blob)
+    if comp == COMP_ZLIB:
+        return zlib.decompress(blob)
+    raise RuntimeError(f"Unsupported compression {comp} (missing lib?)")
+
+
+def depth_to_points(depth_u16: np.ndarray, K: np.ndarray, stride: int, min_mm: int, max_mm: int):
+    fx, fy = float(K[0, 0]), float(K[1, 1])
+    cx, cy = float(K[0, 2]), float(K[1, 2])
+
+    d = depth_u16[::stride, ::stride].astype(np.float32)
+    v, u = np.indices(d.shape, dtype=np.float32)
+    u *= stride
+    v *= stride
+
+    z_mm = d
+    valid = (z_mm > 0) & (z_mm >= min_mm) & (z_mm <= max_mm)
+    if not np.any(valid):
+        return np.empty((0, 3), np.float32)
+
+    z = z_mm * 0.001  # m
+    x = (u - cx) * z / fx
+    y = (v - cy) * z / fy
+
+    pts = np.stack([x, y, z], axis=-1)
+    return pts[valid].astype(np.float32)
+
+
+def parse_roi(s: str):
+    parts = [int(p.strip()) for p in s.split(",")]
+    if len(parts) != 4:
+        raise ValueError("ROI must be x0,y0,x1,y1")
+    return tuple(parts)
+
+
+def main():
+    ap = argparse.ArgumentParser(description="UDP depth viewer + point cloud (debug-friendly defaults).")
+
+    ap.add_argument("--bind", default=DEFAULT["BIND"])
+    ap.add_argument("--port", type=int, default=DEFAULT["PORT"])
+    ap.add_argument("--rcvbuf", type=int, default=DEFAULT["RCVBUF"])
+    ap.add_argument("--stale-ms", type=int, default=DEFAULT["STALE_MS"])
+
+    add_bool_arg(ap, "ui", DEFAULT["UI"], "OpenCV depth window")
+    add_bool_arg(ap, "o3d", DEFAULT["O3D"], "Open3D point cloud window")
+    ap.add_argument("--o3d-every", type=int, default=DEFAULT["O3D_EVERY"])
+
+    ap.add_argument("--min-mm", type=int, default=DEFAULT["MIN_MM"])
+    ap.add_argument("--max-mm", type=int, default=DEFAULT["MAX_MM"])
+    ap.add_argument("--pcd-stride", type=int, default=DEFAULT["PCD_STRIDE"])
+
+    ap.add_argument("--voxel", type=float, default=DEFAULT["VOXEL"], help="meters (0 disables)")
+    add_bool_arg(ap, "remove-plane", DEFAULT["REMOVE_PLANE"], "RANSAC remove dominant plane")
+    ap.add_argument("--roi", type=str, default=DEFAULT["ROI"], help="crop ROI: x0,y0,x1,y1")
+
+    ap.add_argument("--print-config", action="store_true")
+    args = ap.parse_args()
+
+    if args.print_config:
+        print("Effective config:")
+        for k, v in sorted(vars(args).items()):
+            print(f"  {k}: {v}")
+        return
+
+    roi = parse_roi(args.roi) if args.roi else None
+
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, args.rcvbuf)
+    sock.bind((args.bind, args.port))
+    sock.settimeout(0.5)
+
+    zstd_d, lz4mod = make_decompressor()
+
+    pending = {}  # seq -> {parts, got, count, w,h,comp,ts_ns,t0}
+
+    # calibration state
+    K_rgb = None
+
+    # Open3D setup
+    HAS_O3D = False
+    if args.o3d:
+        try:
+            import open3d as o3d
+            HAS_O3D = True
+            vis = o3d.visualization.Visualizer()
+            vis.create_window("OAK-D Depth PointCloud", 1280, 720)
+            pcd = o3d.geometry.PointCloud()
+            added = False
+        except Exception as e:
+            print("[WARN] Open3D not available:", e)
+            args.o3d = False
+
+    ok = 0
+    last_latency_ms = 0.0
+    last_print = time.monotonic()
+
+    print(f"[server] UDP listen {args.bind}:{args.port}  ui={args.ui} o3d={args.o3d}")
+
+    while True:
+        # cleanup stale partial depth frames
+        now = time.monotonic()
+        for seq in list(pending.keys()):
+            if (now - pending[seq]["t0"]) * 1000.0 > args.stale_ms:
+                pending.pop(seq, None)
+
+        try:
+            data, _addr = sock.recvfrom(65535)
+        except socket.timeout:
+            continue
+
+        if len(data) < 4:
+            continue
+
+        magic = data[:4]
+
+        # ---- CAL0 ----
+        if magic == MAGIC_CAL:
+            if len(data) < HDR_CAL.size + CAL_FLOATS.size:
+                continue
+            _, ver, ts_ns, w, h = HDR_CAL.unpack_from(data, 0)
+            floats_units = CAL_FLOATS.unpack_from(data, HDR_CAL.size)
+            floats = floats_units[:-1]
+            K_rgb = np.array(floats[0:9], dtype=np.float32).reshape(3, 3)
+            print(f"[server] CAL0 ver={ver} size={w}x{h} ts={ts_ns}")
+            continue
+
+        # ---- DPT0 ----
+        if magic != MAGIC_DPT or len(data) < HDR_DPT.size:
+            continue
+
+        _, seq, idx, count, ts_ns, w, h, comp, n = HDR_DPT.unpack_from(data, 0)
+        payload = data[HDR_DPT.size:HDR_DPT.size + n]
+        if len(payload) != n or idx >= count:
+            continue
+
+        st = pending.get(seq)
+        if st is None:
+            st = {
+                "t0": time.monotonic(),
+                "w": w, "h": h, "comp": comp,
+                "count": count,
+                "got": 0,
+                "parts": [None] * count,
+                "ts_ns": ts_ns,
+            }
+            pending[seq] = st
+
+        if st["parts"][idx] is None:
+            st["parts"][idx] = payload
+            st["got"] += 1
+
+        if st["got"] != st["count"]:
+            continue
+
+        blob = b"".join(st["parts"])
+        pending.pop(seq, None)
+
+        expected = st["w"] * st["h"] * 2
+        try:
+            raw = decompress(blob, st["comp"], expected=expected, zstd_d=zstd_d, lz4mod=lz4mod)
+        except Exception:
+            continue
+        if len(raw) < expected:
+            continue
+
+        depth = np.frombuffer(raw[:expected], np.uint16).reshape((st["h"], st["w"]))
+        ok += 1
+        last_latency_ms = (time.time_ns() - st["ts_ns"]) / 1e6
+
+        # ROI crop
+        if roi is not None:
+            x0, y0, x1, y1 = roi
+            x0 = max(0, min(depth.shape[1] - 1, x0))
+            x1 = max(0, min(depth.shape[1], x1))
+            y0 = max(0, min(depth.shape[0] - 1, y0))
+            y1 = max(0, min(depth.shape[0], y1))
+            depth_roi = depth[y0:y1, x0:x1] if (x1 > x0 and y1 > y0) else depth
+        else:
+            depth_roi = depth
+
+        # OpenCV depth viz
+        if args.ui:
+            d = depth_roi.astype(np.float32)
+            valid = (d > 0) & (d >= args.min_mm) & (d <= args.max_mm)
+            vis8 = np.zeros(d.shape, np.uint8)
+            if valid.any():
+                lo = np.percentile(d[valid], 3)
+                hi = np.percentile(d[valid], 97)
+                vis8 = np.clip((d - lo) * 255.0 / max(1.0, (hi - lo)), 0, 255).astype(np.uint8)
+
+            dc = cv2.applyColorMap(vis8, cv2.COLORMAP_JET)
+            dc[~valid] = 0
+            cv2.putText(dc, f"depth {depth.shape[1]}x{depth.shape[0]}  {last_latency_ms:.1f}ms  ok {ok}",
+                        (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
+            cv2.imshow("Depth UDP", dc)
+            if cv2.waitKey(1) == ord("q"):
+                break
+
+        # Open3D point cloud
+        if args.o3d and HAS_O3D and (ok % max(1, args.o3d_every) == 0) and (K_rgb is not None):
+            pts = depth_to_points(depth_roi, K_rgb, stride=max(1, args.pcd_stride),
+                                  min_mm=args.min_mm, max_mm=args.max_mm)
+            if pts.shape[0] > 0:
+                import open3d as o3d
+                p = o3d.geometry.PointCloud()
+                p.points = o3d.utility.Vector3dVector(pts)
+
+                if args.voxel and args.voxel > 0:
+                    p = p.voxel_down_sample(args.voxel)
+
+                if args.remove_plane and len(p.points) > 2000:
+                    _plane_model, inliers = p.segment_plane(distance_threshold=0.01, ransac_n=3, num_iterations=200)
+                    p = p.select_by_index(inliers, invert=True)
+
+                pcd.points = p.points
+                if not added:
+                    vis.add_geometry(pcd)
+                    added = True
+                else:
+                    vis.update_geometry(pcd)
+                vis.poll_events()
+                vis.update_renderer()
+
+        if time.monotonic() - last_print > 1.0:
+            print(f"[server] ok={ok} latency={last_latency_ms:.1f}ms pending={len(pending)}")
+            last_print = time.monotonic()
+
+    cv2.destroyAllWindows()
+
+
+if __name__ == "__main__":
+    main()
+
+"""
+Now you can simply run:
+
+python3 server_depth_viewer.py
+
+(Defaults match the long command you were using.)
+"""
