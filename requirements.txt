@@ -1,0 +1,12 @@
+# OAK-D Setup Requirements (Jetson ARM64 Safe)
+# Note: DO NOT add torch or opencv-python here.
+# Install PyTorch via NVIDIA's custom wheel index. OpenCV is provided by Jetson Linux.
+
+depthai
+numpy
+websockets
+zstandard
+lz4
+requests
+Pillow
+open3d

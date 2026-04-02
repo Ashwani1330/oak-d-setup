@@ -67,16 +67,30 @@ def install_signals():
     signal.signal(signal.SIGINT,  lambda *_: quit_event.set())
     signal.signal(signal.SIGTERM, lambda *_: quit_event.set())
 
+# def make_ffmpeg_cmd(rtsp_url: str, fps: int, transport: str):
+#     # NOTE: timestamps here are "synthetic"; ffmpeg generates them from N (packet index).
+#     # For tight RGB<->Depth sync, we do pairing by buffering on server.
+#     rtp_ticks = 90000 // fps
+#     return [
+#         "ffmpeg", "-nostdin", "-loglevel", "warning",
+#         "-f", "h264", "-i", "pipe:0",
+#         "-c:v", "copy",
+#         "-bsf:v", f"setts=ts=N*{rtp_ticks}:time_base=1/90000",
+#         "-flush_packets", "1",
+#         "-muxdelay", "0", "-muxpreload", "0",
+#         "-f", "rtsp",
+#         "-rtsp_transport", transport,
+#         "-pkt_size", str(MTU),
+#         rtsp_url,
+#     ]
 
 def make_ffmpeg_cmd(rtsp_url: str, fps: int, transport: str):
-    # NOTE: timestamps here are "synthetic"; ffmpeg generates them from N (packet index).
-    # For tight RGB<->Depth sync, we do pairing by buffering on server.
     rtp_ticks = 90000 // fps
     return [
         "ffmpeg", "-nostdin", "-loglevel", "warning",
         "-f", "h264", "-i", "pipe:0",
         "-c:v", "copy",
-        "-bsf:v", f"setts=ts=N*{rtp_ticks}:duration={rtp_ticks}:time_base=1/90000",
+        "-bsf:v", f"setts=ts=N*{rtp_ticks}",
         "-flush_packets", "1",
         "-muxdelay", "0", "-muxpreload", "0",
         "-f", "rtsp",
@@ -84,7 +98,6 @@ def make_ffmpeg_cmd(rtsp_url: str, fps: int, transport: str):
         "-pkt_size", str(MTU),
         rtsp_url,
     ]
-
 
 class DepthCompressor:
     def __init__(self, mode: str):
