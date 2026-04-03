@@ -136,20 +136,46 @@ class DepthCompressor:
         return raw, COMP_NONE
 
 
+# def build_cal_packet(w: int, h: int) -> bytes:
+#     with dai.Device() as device:
+#         calib = device.readCalibration()
+#         K_rgb = np.array(calib.getCameraIntrinsics(dai.CameraBoardSocket.CAM_A, w, h), dtype=np.float32)
+#         K_right = np.array(calib.getCameraIntrinsics(dai.CameraBoardSocket.CAM_C, w, h), dtype=np.float32)
+#         T = np.array(calib.getCameraExtrinsics(dai.CameraBoardSocket.CAM_C, dai.CameraBoardSocket.CAM_A), dtype=np.float32)
+#         T_3x4 = T[:3, :4]
+# 
+#         payload_floats = list(K_rgb.reshape(-1)) + list(K_right.reshape(-1)) + list(T_3x4.reshape(-1))
+#         assert len(payload_floats) == 30
+# 
+#     ts_ns = time.time_ns()
+#     return HDR_CAL.pack(MAGIC_CAL, 1, ts_ns, w, h) + CAL_FLOATS.pack(*payload_floats, UNITS_CM)
+
 def build_cal_packet(w: int, h: int) -> bytes:
     with dai.Device() as device:
         calib = device.readCalibration()
-        K_rgb = np.array(calib.getCameraIntrinsics(dai.CameraBoardSocket.CAM_A, w, h), dtype=np.float32)
-        K_right = np.array(calib.getCameraIntrinsics(dai.CameraBoardSocket.CAM_C, w, h), dtype=np.float32)
-        T = np.array(calib.getCameraExtrinsics(dai.CameraBoardSocket.CAM_C, dai.CameraBoardSocket.CAM_A), dtype=np.float32)
-        T_3x4 = T[:3, :4]
 
-        payload_floats = list(K_rgb.reshape(-1)) + list(K_right.reshape(-1)) + list(T_3x4.reshape(-1))
+        K_rgb = np.array(
+            calib.getCameraIntrinsics(dai.CameraBoardSocket.CAM_A, w, h),
+            dtype=np.float32,
+        )
+
+        # stereo.depth is treated as depth in the left stereo camera frame
+        K_depth = np.array(
+            calib.getCameraIntrinsics(dai.CameraBoardSocket.CAM_B, w, h),
+            dtype=np.float32,
+        )
+
+        T_depth_to_rgb = np.array(
+            calib.getCameraExtrinsics(dai.CameraBoardSocket.CAM_B, dai.CameraBoardSocket.CAM_A),
+            dtype=np.float32,
+        )
+        T_3x4 = T_depth_to_rgb[:3, :4]
+
+        payload_floats = list(K_rgb.reshape(-1)) + list(K_depth.reshape(-1)) + list(T_3x4.reshape(-1))
         assert len(payload_floats) == 30
 
     ts_ns = time.time_ns()
     return HDR_CAL.pack(MAGIC_CAL, 1, ts_ns, w, h) + CAL_FLOATS.pack(*payload_floats, UNITS_CM)
-
 
 def configure_stereo_filters(stereo: dai.node.StereoDepth, min_mm: int, max_mm: int, force_decimation_1: bool):
     # Preset
