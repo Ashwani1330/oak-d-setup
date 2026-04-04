@@ -91,6 +91,7 @@ def bundle_rows(bundle: dict[str, Any]) -> dict[str, Any]:
 
     sender_depth_fps = _num(sender_metrics.get("depth_send_fps"))
     receiver_depth_fps = _num(receiver_metrics.get("depth_receive_fps"))
+    fused_pair_fps = _num(receiver_metrics.get("fused_pair_fps"))
     compression_ms = _num(sender_metrics.get("compression_ms_mean"))
     send_ms = _num(sender_metrics.get("send_ms_mean"))
     decomp_ms = _num(receiver_metrics.get("decompression_ms_mean"))
@@ -139,11 +140,14 @@ def bundle_rows(bundle: dict[str, Any]) -> dict[str, Any]:
     stale_drops = _num(receiver_metrics.get("stale_depth_drops")) or 0.0
     missing_packets = _num(receiver_metrics.get("missing_packets_total")) or 0.0
     seq_gaps = _num(receiver_metrics.get("sequence_gaps")) or 0.0
+    sync_rejects = _num(receiver_metrics.get("sync_rejects")) or 0.0
+    sync_reject_fraction = _num(receiver_metrics.get("sync_reject_fraction")) or 0.0
     receiver_sync_warning = bool(rgb_pair_delta is not None and rgb_pair_delta > 250.0)
     latency_valid = bool(latency_mean is not None and clock_sync is not None)
     bottleneck = infer_bottleneck(
         sender_depth_fps=sender_depth_fps,
         receiver_depth_fps=receiver_depth_fps,
+        fused_pair_fps=fused_pair_fps,
         frame_budget_ms=frame_budget_ms,
         compression_ms=compression_ms,
         send_ms=send_ms,
@@ -151,6 +155,7 @@ def bundle_rows(bundle: dict[str, Any]) -> dict[str, Any]:
         stale_drops=stale_drops,
         seq_gaps=seq_gaps,
         missing_packets=missing_packets,
+        sync_reject_fraction=sync_reject_fraction,
         sender_cpu=sender_cpu,
         receiver_cpu=receiver_cpu,
         rgb_pair_delta=rgb_pair_delta,
@@ -171,6 +176,7 @@ def bundle_rows(bundle: dict[str, Any]) -> dict[str, Any]:
         "depth_frame_budget_ms": frame_budget_ms,
         "sender_depth_fps": sender_depth_fps,
         "receiver_depth_fps": receiver_depth_fps,
+        "fused_pair_fps": fused_pair_fps,
         "receiver_fps_efficiency": _safe_div(receiver_depth_fps, sender_depth_fps),
         "latency_ms_mean": latency_mean,
         "latency_ms_p95": latency_p95,
@@ -200,6 +206,8 @@ def bundle_rows(bundle: dict[str, Any]) -> dict[str, Any]:
         "receiver_stale_depth_drops": stale_drops,
         "receiver_missing_packets_total": missing_packets,
         "receiver_sequence_gaps": seq_gaps,
+        "receiver_sync_rejects": sync_rejects,
+        "receiver_sync_reject_fraction": sync_reject_fraction,
         "clock_sync_rtt_ms": clock_sync_rtt_ms,
         "clock_sync_offset_ms": clock_sync_offset_ms,
         "sender_bottleneck": sender_summary.get("bottleneck"),
@@ -213,6 +221,7 @@ def infer_bottleneck(
     *,
     sender_depth_fps: float | None,
     receiver_depth_fps: float | None,
+    fused_pair_fps: float | None,
     frame_budget_ms: float | None,
     compression_ms: float | None,
     send_ms: float | None,
@@ -220,6 +229,7 @@ def infer_bottleneck(
     stale_drops: float,
     seq_gaps: float,
     missing_packets: float,
+    sync_reject_fraction: float,
     sender_cpu: float | None,
     receiver_cpu: float | None,
     rgb_pair_delta: float | None,
@@ -229,10 +239,15 @@ def infer_bottleneck(
 ) -> str:
     if stale_drops > 0 or seq_gaps > 0 or missing_packets > 0:
         return "network-loss-bound"
+    if sync_reject_fraction > 0.10:
+        return "rgb-depth-sync-bound"
     if rgb_pair_delta is not None and rgb_pair_delta > 250.0:
         return "rgb-depth-sync-bound"
     if fused_skew_ms is not None and fused_skew_ms > 80.0:
         return "rgb-depth-sync-bound"
+    if receiver_depth_fps is not None and fused_pair_fps is not None and receiver_depth_fps > 0.0:
+        if fused_pair_fps / receiver_depth_fps < 0.85:
+            return "rgb-depth-sync-bound"
     if sender_depth_fps is not None and receiver_depth_fps is not None and sender_depth_fps > 0.0:
         efficiency = receiver_depth_fps / sender_depth_fps
         if efficiency < 0.78:
@@ -276,15 +291,15 @@ def generate_markdown(rows: list[dict[str, Any]]) -> str:
             "",
             "## Main Matrix",
             "",
-            "| run_id | net | comp | sender fps | receiver fps | fps efficiency | depth latency ms | rgb latency ms | usable fused latency ms | payload mbps | packet ct | comp ms | send ms | decomp ms | source skew ms | bottleneck |",
-            "|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|",
+            "| run_id | net | comp | sender fps | receiver fps | fused fps | fps efficiency | depth latency ms | rgb latency ms | usable fused latency ms | payload mbps | packet ct | comp ms | send ms | decomp ms | source skew ms | sync reject frac | bottleneck |",
+            "|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|",
         ]
     )
     for row in main_rows:
         lines.append(
-            "| {run_id} | {network_label} | {compression} | {sender_depth_fps} | {receiver_depth_fps} | "
+            "| {run_id} | {network_label} | {compression} | {sender_depth_fps} | {receiver_depth_fps} | {fused_pair_fps} | "
             "{receiver_fps_efficiency} | {latency_ms_mean} | {rgb_latency_ms_mean} | {practical_latency_ms_est} | {depth_payload_mbps_est} | {packet_count_mean} | "
-            "{compression_ms_mean} | {send_ms_mean} | {decompression_ms_mean} | {fused_source_skew_ms_mean} | {inferred_bottleneck} |".format(
+            "{compression_ms_mean} | {send_ms_mean} | {decompression_ms_mean} | {fused_source_skew_ms_mean} | {receiver_sync_reject_fraction} | {inferred_bottleneck} |".format(
                 **{key: _fmt(value) for key, value in row.items()}
             )
         )
@@ -389,6 +404,11 @@ def generate_recommendations(rows: list[dict[str, Any]]) -> list[str]:
             lines.append(
                 f"- `{row['profile_name']}` shows high matched RGB/depth source skew "
                 f"({_fmt(row['fused_source_skew_ms_mean'])} ms), so the fused frame is temporally weak even if transport latency is low."
+            )
+        if row.get("receiver_sync_reject_fraction") is not None and float(row["receiver_sync_reject_fraction"]) > 0.10:
+            lines.append(
+                f"- `{row['profile_name']}` rejected too many depth frames during fusion "
+                f"({_fmt(100.0 * float(row['receiver_sync_reject_fraction']))}% outside the sync window)."
             )
         if row.get("receiver_stale_depth_drops", 0) and row["receiver_stale_depth_drops"] > 0:
             lines.append(

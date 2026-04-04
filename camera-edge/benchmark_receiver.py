@@ -56,6 +56,7 @@ RECEIVER_FIELDS = [
     "fused_ready_latency_ms",
     "fused_source_skew_ms",
     "rgb_pair_delta_ms",
+    "sync_reject",
     "sequence_gap",
     "stale_drops",
     "missing_packets",
@@ -106,6 +107,7 @@ class _RgbFrame:
 class _RgbMeta:
     sender_index: int
     source_ts_ns: int
+    sender_wall_ns: int
     width: int
     height: int
 
@@ -140,6 +142,7 @@ class TransportBenchmarkReceiver:
         self.sequence_gaps = 0
         self.last_latency_ms = 0.0
         self.last_fused_ready_latency_ms = 0.0
+        self.sync_rejects = 0
         backlog = max(4, int(profile.max_rgb_buffer) * 2)
         self.unmatched_rgb_frames: deque[_RgbFrame] = deque(maxlen=backlog)
         self.pending_rgb_meta: deque[_RgbMeta] = deque(maxlen=backlog)
@@ -167,14 +170,8 @@ class TransportBenchmarkReceiver:
             except Exception:
                 pass
             self.rgb_meta_sock = None
-        if self.cap is not None:
-            try:
-                self.cap.release()
-            except Exception:
-                pass
-            self.cap = None
         for thread in list(self.threads):
-            thread.join(timeout=5.0)
+            thread.join(timeout=6.0)
         self.threads = []
 
     def status(self) -> dict[str, float | int]:
@@ -183,12 +180,15 @@ class TransportBenchmarkReceiver:
             "depth_frames": int(self.depth_frames),
             "stale_drops": int(self.stale_drops),
             "sequence_gaps": int(self.sequence_gaps),
+            "sync_rejects": int(self.sync_rejects),
             "last_latency_ms": float(self.last_latency_ms),
             "last_fused_ready_latency_ms": float(self.last_fused_ready_latency_ms),
         }
 
     def _open_rtsp_capture(self):
-        ffmpeg_opts = f"rtsp_transport;{self.profile.rtsp_transport}|fflags;nobuffer|flags;low_delay"
+        ffmpeg_opts = (
+            f"rtsp_transport;{self.profile.rtsp_transport}|fflags;nobuffer|flags;low_delay|threads;1"
+        )
         if not os.environ.get("OPENCV_FFMPEG_CAPTURE_OPTIONS"):
             os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = ffmpeg_opts
 
@@ -224,9 +224,9 @@ class TransportBenchmarkReceiver:
         return cap
 
     def _rgb_loop(self) -> None:
+        cap = None
         try:
             warned_waiting = False
-            cap = None
             while not self.stop_event.is_set():
                 cap = self._open_rtsp_capture()
                 if cap is not None:
@@ -283,6 +283,13 @@ class TransportBenchmarkReceiver:
         except Exception as exc:
             self.fatal_error = f"RGB loop failed: {exc}"
             self.stop_event.set()
+        finally:
+            if cap is not None:
+                try:
+                    cap.release()
+                except Exception:
+                    pass
+            self.cap = None
 
     def _rgb_meta_loop(self) -> None:
         try:
@@ -303,11 +310,12 @@ class TransportBenchmarkReceiver:
                     raise
                 if len(data) < HDR_RGB.size or data[:4] != MAGIC_RGB:
                     continue
-                _magic, sender_index, source_ts_ns, width, height = HDR_RGB.unpack_from(data, 0)
+                _magic, sender_index, source_ts_ns, sender_wall_ns, width, height = HDR_RGB.unpack_from(data, 0)
                 self._register_rgb_meta(
                     _RgbMeta(
                         sender_index=int(sender_index),
                         source_ts_ns=int(source_ts_ns),
+                        sender_wall_ns=int(sender_wall_ns),
                         width=int(width),
                         height=int(height),
                     )
@@ -400,13 +408,14 @@ class TransportBenchmarkReceiver:
                     continue
 
                 recv_wall_ns = time.time_ns()
-                rgb_match = self._pair_rgb(float(recv_mono_s))
+                rgb_match = self._pair_rgb(int(state["ts_ns"]))
                 pair_delta_ms = None
                 rgb_width = None
                 rgb_height = None
                 rgb_latency_ms = None
                 fused_ready_latency_ms = None
                 fused_source_skew_ms = None
+                sync_reject = 0
                 if rgb_match is not None:
                     pair_delta_ms = abs(float(recv_mono_s) - float(rgb_match.recv_mono_s)) * 1000.0
                     rgb_width = int(rgb_match.width)
@@ -417,6 +426,9 @@ class TransportBenchmarkReceiver:
                         fused_ready_wall_ns = max(int(recv_wall_ns), int(rgb_match.recv_wall_ns))
                         fused_source_ts_ns = max(int(state["ts_ns"]), int(rgb_match.source_ts_ns))
                         fused_ready_latency_ms = (int(fused_ready_wall_ns) - int(fused_source_ts_ns)) / 1e6
+                else:
+                    sync_reject = 1
+                    self.sync_rejects += 1
                 gap = 0
                 if self.prev_complete_seq is not None:
                     gap = max(0, int(seq) - int(self.prev_complete_seq) - 1)
@@ -443,6 +455,7 @@ class TransportBenchmarkReceiver:
                         "fused_ready_latency_ms": fused_ready_latency_ms,
                         "fused_source_skew_ms": fused_source_skew_ms,
                         "rgb_pair_delta_ms": pair_delta_ms,
+                        "sync_reject": sync_reject,
                         "sequence_gap": gap,
                         "stale_drops": 0,
                         "missing_packets": 0,
@@ -485,6 +498,7 @@ class TransportBenchmarkReceiver:
                     "fused_ready_latency_ms": None,
                     "fused_source_skew_ms": None,
                     "rgb_pair_delta_ms": None,
+                    "sync_reject": 0,
                     "sequence_gap": 0,
                     "stale_drops": 1,
                     "missing_packets": missing,
@@ -517,11 +531,20 @@ class TransportBenchmarkReceiver:
         if frame.height <= 0:
             frame.height = int(meta.height)
 
-    def _pair_rgb(self, recv_mono_s: float) -> _RgbFrame | None:
+    def _pair_rgb(self, depth_source_ts_ns: int) -> _RgbFrame | None:
         with self.rgb_lock:
             if not self.rgb_history:
                 return None
-            return min(self.rgb_history, key=lambda msg: abs(float(msg.recv_mono_s) - float(recv_mono_s)))
+            candidates = [
+                msg
+                for msg in self.rgb_history
+                if msg.source_ts_ns is not None
+                and abs(int(depth_source_ts_ns) - int(msg.source_ts_ns)) <= int(float(self.profile.max_rgb_depth_delta_ms) * 1e6)
+                and int(msg.source_ts_ns) <= int(depth_source_ts_ns)
+            ]
+            if candidates:
+                return max(candidates, key=lambda msg: int(msg.source_ts_ns or 0))
+            return None
 
 
 def parse_args() -> argparse.Namespace:
@@ -612,7 +635,7 @@ def main() -> int:
                     f"depth_receive_fps={status['depth_frames'] / live_elapsed:.2f} "
                     f"depth_latency_ms={status['last_latency_ms']:.1f} "
                     f"fused_latency_ms={status['last_fused_ready_latency_ms']:.1f} "
-                    f"stale={status['stale_drops']} gaps={status['sequence_gaps']}"
+                    f"stale={status['stale_drops']} gaps={status['sequence_gaps']} sync_rejects={status['sync_rejects']}"
                 )
                 last_print = time.monotonic()
             time.sleep(0.1)

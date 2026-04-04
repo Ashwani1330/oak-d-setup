@@ -15,11 +15,36 @@ python camera-edge/benchmark_receiver.py --profile wireless_lz4 --run-id 2026040
 python camera-edge/edge_rgb_depth_sender.py --profile wireless_lz4 --run-id 20260404_wireless_lz4
 
 # Compression comparisons
+python camera-edge/benchmark_receiver.py --profile wireless_none --run-id 20260404_wireless_none
+python camera-edge/edge_rgb_depth_sender.py --profile wireless_none --run-id 20260404_wireless_none
+
+python camera-edge/benchmark_receiver.py --profile wireless_zstd --run-id 20260404_wireless_zstd
+python camera-edge/edge_rgb_depth_sender.py --profile wireless_zstd --run-id 20260404_wireless_zstd
+
 python camera-edge/benchmark_receiver.py --profile wired_none --run-id 20260404_wired_none
 python camera-edge/edge_rgb_depth_sender.py --profile wired_none --run-id 20260404_wired_none
 
 python camera-edge/benchmark_receiver.py --profile wired_zstd --run-id 20260404_wired_zstd
 python camera-edge/edge_rgb_depth_sender.py --profile wired_zstd --run-id 20260404_wired_zstd
+
+# Cadence-matched 15/15 sync study
+python camera-edge/benchmark_receiver.py --profile wired_none_15x15 --run-id 20260404_wired_none_15x15
+python camera-edge/edge_rgb_depth_sender.py --profile wired_none_15x15 --run-id 20260404_wired_none_15x15
+
+python camera-edge/benchmark_receiver.py --profile wired_lz4_15x15 --run-id 20260404_wired_lz4_15x15
+python camera-edge/edge_rgb_depth_sender.py --profile wired_lz4_15x15 --run-id 20260404_wired_lz4_15x15
+
+python camera-edge/benchmark_receiver.py --profile wired_zstd_15x15 --run-id 20260404_wired_zstd_15x15
+python camera-edge/edge_rgb_depth_sender.py --profile wired_zstd_15x15 --run-id 20260404_wired_zstd_15x15
+
+python camera-edge/benchmark_receiver.py --profile wireless_none_15x15 --run-id 20260404_wireless_none_15x15
+python camera-edge/edge_rgb_depth_sender.py --profile wireless_none_15x15 --run-id 20260404_wireless_none_15x15
+
+python camera-edge/benchmark_receiver.py --profile wireless_lz4_15x15 --run-id 20260404_wireless_lz4_15x15
+python camera-edge/edge_rgb_depth_sender.py --profile wireless_lz4_15x15 --run-id 20260404_wireless_lz4_15x15
+
+python camera-edge/benchmark_receiver.py --profile wireless_zstd_15x15 --run-id 20260404_wireless_zstd_15x15
+python camera-edge/edge_rgb_depth_sender.py --profile wireless_zstd_15x15 --run-id 20260404_wireless_zstd_15x15
 
 # Packet overhead microbench
 python camera-edge/benchmark_receiver.py --profile packet_overhead --run-id 20260404_packet_0900

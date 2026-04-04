@@ -11,7 +11,7 @@ MAGIC_RGB = b"RGB0"
 
 HDR_DPT = struct.Struct("<4sIHHQHHBH")
 HDR_CAL = struct.Struct("<4sBQHH")
-HDR_RGB = struct.Struct("<4sIQHH")
+HDR_RGB = struct.Struct("<4sIQQHH")
 CAL_FLOATS = struct.Struct("<30fB")
 
 COMP_NONE = 0

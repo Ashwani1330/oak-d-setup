@@ -1,6 +1,6 @@
 # Camera-Edge Benchmark Report
 
-Runs analyzed: 8
+Runs analyzed: 14
 
 ## Key Takeaways
 
@@ -11,14 +11,20 @@ Runs analyzed: 8
 
 ## Main Matrix
 
-| run_id | net | comp | sender fps | receiver fps | fps efficiency | depth latency ms | rgb latency ms | usable fused latency ms | payload mbps | packet ct | comp ms | send ms | decomp ms | source skew ms | bottleneck |
-|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|
-| 20260404_wired_lz4 | wired | lz4 | 14.088 | - | - | - | - | - | 17.758 | 134.860 | 2.897 | 1.733 | - | - | balanced |
-| 20260404_wired_none | wired | none | 14.084 | - | - | - | - | - | 57.687 | 437.000 | 0.006 | 31.940 | - | - | packetization-or-network-bound |
-| 20260404_wired_zstd | wired | zstd | 14.238 | - | - | - | - | - | 12.916 | 97.182 | 4.731 | 1.361 | - | - | balanced |
-| 20260404_wireless_lz4 | wireless | lz4 | 14.722 | - | - | - | - | - | 18.532 | 134.640 | 2.879 | 4.168 | - | - | balanced |
-| 20260404_wireless_none | wireless | none | 12.879 | - | - | - | - | - | 52.751 | 437.000 | 0.007 | 26.152 | - | - | packetization-or-network-bound |
-| 20260404_wireless_zstd | wireless | zstd | 14.118 | - | - | - | - | - | 12.818 | 97.245 | 4.740 | 3.110 | - | - | balanced |
+| run_id | net | comp | sender fps | receiver fps | fused fps | fps efficiency | depth latency ms | rgb latency ms | usable fused latency ms | payload mbps | packet ct | comp ms | send ms | decomp ms | source skew ms | sync reject frac | bottleneck |
+|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|
+| 20260404_wired_lz4 | wired | lz4 | 14.088 | - | - | - | - | - | - | 17.758 | 134.860 | 2.897 | 1.733 | - | - | 0.000 | balanced |
+| 20260404_wired_lz4_15x15 | wired | lz4 | 14.151 | - | - | - | - | - | - | 17.684 | 133.693 | 2.879 | 1.773 | - | - | 0.000 | balanced |
+| 20260404_wired_none | wired | none | 14.084 | - | - | - | - | - | - | 57.687 | 437.000 | 0.006 | 31.940 | - | - | 0.000 | packetization-or-network-bound |
+| 20260404_wired_none_15x15 | wired | none | 14.094 | - | - | - | - | - | - | 57.730 | 437.000 | 0.006 | 31.425 | - | - | 0.000 | packetization-or-network-bound |
+| 20260404_wired_zstd | wired | zstd | 14.238 | - | - | - | - | - | - | 12.916 | 97.182 | 4.731 | 1.361 | - | - | 0.000 | balanced |
+| 20260404_wired_zstd_15x15 | wired | zstd | 14.093 | - | - | - | - | - | - | 12.635 | 96.065 | 4.763 | 1.303 | - | - | 0.000 | balanced |
+| 20260404_wireless_lz4 | wireless | lz4 | 14.722 | - | - | - | - | - | - | 18.532 | 134.640 | 2.879 | 4.168 | - | - | 0.000 | balanced |
+| 20260404_wireless_lz4_15x15 | wireless | lz4 | 14.246 | - | - | - | - | - | - | 17.845 | 133.998 | 2.884 | 4.705 | - | - | 0.000 | balanced |
+| 20260404_wireless_none | wireless | none | 12.879 | - | - | - | - | - | - | 52.751 | 437.000 | 0.007 | 26.152 | - | - | 0.000 | packetization-or-network-bound |
+| 20260404_wireless_none_15x15 | wireless | none | 12.958 | - | - | - | - | - | - | 53.075 | 437.000 | 0.007 | 25.999 | - | - | 0.000 | packetization-or-network-bound |
+| 20260404_wireless_zstd | wireless | zstd | 14.118 | - | - | - | - | - | - | 12.818 | 97.245 | 4.740 | 3.110 | - | - | 0.000 | balanced |
+| 20260404_wireless_zstd_15x15 | wireless | zstd | 14.090 | - | - | - | - | - | - | 12.798 | 97.302 | 4.791 | 3.113 | - | - | 0.000 | balanced |
 
 ## Secondary Runs
 
@@ -29,12 +35,14 @@ Runs analyzed: 8
 
 ## Recommendations
 
-- Best balanced default: `wireless_zstd` (receiver FPS -, usable fused latency - ms, payload 12.818 Mbps, bottleneck `balanced`).
-- Best latency-first option: `wireless_zstd` at - ms usable fused latency.
-- Best bandwidth-efficient option: `wireless_zstd` at 12.818 Mbps estimated depth payload.
+- Best balanced default: `wired_zstd_15x15` (receiver FPS -, usable fused latency - ms, payload 12.635 Mbps, bottleneck `balanced`).
+- Best latency-first option: `wired_zstd_15x15` at - ms usable fused latency.
+- Best bandwidth-efficient option: `wired_zstd_15x15` at 12.635 Mbps estimated depth payload.
 - Highest throughput option: `wired_lz4` at - FPS.
 - `wired_none` looks packet/network-heavy: packet count 437.000, send time 31.940 ms.
+- `wired_none_15x15` looks packet/network-heavy: packet count 437.000, send time 31.425 ms.
 - `wireless_none` looks packet/network-heavy: packet count 437.000, send time 26.152 ms.
+- `wireless_none_15x15` looks packet/network-heavy: packet count 437.000, send time 25.999 ms.
 
 ## Caveats
 

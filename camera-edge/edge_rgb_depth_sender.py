@@ -226,6 +226,55 @@ def sender_wall_ns(clock_offset_ns: int) -> int:
     return time.time_ns() + int(clock_offset_ns)
 
 
+def _to_time_ns(value) -> int | None:
+    if value is None:
+        return None
+    if hasattr(value, "total_seconds"):
+        try:
+            return int(float(value.total_seconds()) * 1e9)
+        except Exception:
+            return None
+    try:
+        return int(value)
+    except Exception:
+        return None
+
+
+def _msg_timestamp_ns(message) -> int | None:
+    for name in ("getTimestampDevice", "getTimestamp"):
+        try:
+            method = getattr(message, name, None)
+            if method is None:
+                continue
+            ts_ns = _to_time_ns(method())
+            if ts_ns is not None and ts_ns > 0:
+                return ts_ns
+        except Exception:
+            continue
+    return None
+
+
+def _msg_sequence_num(message) -> int | None:
+    try:
+        method = getattr(message, "getSequenceNum", None)
+        if method is None:
+            return None
+        return int(method())
+    except Exception:
+        return None
+
+
+def _normalize_source_ts_ns(device_ts_ns: int | None, *, clock_offset_ns: int, state: dict[str, int | None]) -> int:
+    wall_now_ns = sender_wall_ns(clock_offset_ns)
+    if device_ts_ns is None or device_ts_ns <= 0:
+        return wall_now_ns
+    base_offset_ns = state.get("device_to_sender_wall_ns")
+    if base_offset_ns is None:
+        base_offset_ns = int(wall_now_ns) - int(device_ts_ns)
+        state["device_to_sender_wall_ns"] = int(base_offset_ns)
+    return int(device_ts_ns) + int(base_offset_ns)
+
+
 def main() -> int:
     args = parse_args()
     profile = get_profile(args.profile)
@@ -301,6 +350,8 @@ def main() -> int:
     depth_seq = 0
     progress_last = 0.0
     duration_deadline = None
+    rgb_capture_meta: deque[tuple[int | None, int | None]] | None = None
+    ts_norm_state: dict[str, int | None] = {"device_to_sender_wall_ns": None}
 
     try:
         with dai.Pipeline() as pipeline:
@@ -317,6 +368,9 @@ def main() -> int:
                 q_cam_rgb = cam_nv12.createOutputQueue(maxSize=2, blocking=False)
             except Exception:
                 q_cam_rgb = None
+            from collections import deque
+
+            rgb_capture_meta = deque(maxlen=16)
 
             enc = pipeline.create(dai.node.VideoEncoder).build(
                 cam_nv12,
@@ -393,6 +447,14 @@ def main() -> int:
                 if q_cam_rgb is not None:
                     cam_msg, cam_drained = drain_latest(q_cam_rgb)
                     if cam_msg is not None:
+                        cam_source_ts_ns = _normalize_source_ts_ns(
+                            _msg_timestamp_ns(cam_msg),
+                            clock_offset_ns=clock_offset_ns,
+                            state=ts_norm_state,
+                        )
+                        cam_seq = _msg_sequence_num(cam_msg)
+                        if rgb_capture_meta is not None:
+                            rgb_capture_meta.append((cam_seq, cam_source_ts_ns))
                         record_sender(
                             {
                                 "timestamp_ns": time.time_ns(),
@@ -400,6 +462,9 @@ def main() -> int:
                                 "event": "rgb_camera",
                                 "index": rgb_camera_index,
                                 "drained_count": cam_drained,
+                                "seq": cam_seq,
+                                "source_ts_ns": cam_source_ts_ns,
+                                "clock_offset_ns": clock_offset_ns,
                             }
                         )
                         rgb_camera_index += 1
@@ -410,7 +475,23 @@ def main() -> int:
                         print("[sender] ffmpeg exited unexpectedly.")
                         break
                     payload = pkt.getData().tobytes()
-                    rgb_source_ts_ns = sender_wall_ns(clock_offset_ns)
+                    rgb_seq = _msg_sequence_num(pkt)
+                    rgb_source_ts_ns = _msg_timestamp_ns(pkt)
+                    if rgb_source_ts_ns is None and rgb_capture_meta:
+                        matched = None
+                        if rgb_seq is not None:
+                            for item in reversed(rgb_capture_meta):
+                                if item[0] == rgb_seq:
+                                    matched = item
+                                    break
+                        if matched is None:
+                            matched = rgb_capture_meta[-1]
+                        rgb_source_ts_ns = matched[1]
+                    rgb_source_ts_ns = _normalize_source_ts_ns(
+                        rgb_source_ts_ns,
+                        clock_offset_ns=clock_offset_ns,
+                        state=ts_norm_state,
+                    )
                     t0 = time.perf_counter()
                     try:
                         assert proc.stdin is not None
@@ -420,7 +501,14 @@ def main() -> int:
                         break
                     write_ms = (time.perf_counter() - t0) * 1000.0
                     try:
-                        meta = HDR_RGB.pack(MAGIC_RGB, rgb_write_index, rgb_source_ts_ns, profile.width, profile.height)
+                        meta = HDR_RGB.pack(
+                            MAGIC_RGB,
+                            int(rgb_write_index if rgb_seq is None else rgb_seq),
+                            int(rgb_source_ts_ns),
+                            int(sender_wall_ns(clock_offset_ns)),
+                            profile.width,
+                            profile.height,
+                        )
                         udp.sendto(meta, (profile.depth_host, int(profile.rgb_meta_port)))
                     except Exception as exc:
                         print(f"[sender] WARN: failed to send RGB metadata for frame {rgb_write_index}: {exc}")
@@ -430,6 +518,7 @@ def main() -> int:
                             "elapsed_s": elapsed_s(start_mono_s),
                             "event": "rgb_rtsp_write",
                             "index": rgb_write_index,
+                            "seq": rgb_seq,
                             "ffmpeg_write_bytes": len(payload),
                             "ffmpeg_write_ms": write_ms,
                             "drained_count": rgb_drained,
@@ -442,23 +531,29 @@ def main() -> int:
                 if now_mono >= next_depth_t:
                     dmsg, depth_drained = drain_latest(q_depth)
                     if dmsg is not None:
+                        depth_msg_seq = _msg_sequence_num(dmsg)
+                        packet_seq = depth_seq if depth_msg_seq is None else int(depth_msg_seq) & 0xFFFFFFFF
                         depth = dmsg.getFrame().astype(np.uint16, copy=False)
                         raw = depth.tobytes(order="C")
                         t_comp0 = time.perf_counter()
                         payload, comp_id = compressor.compress(raw)
                         compression_ms = (time.perf_counter() - t_comp0) * 1000.0
 
-                        source_ts_ns = sender_wall_ns(clock_offset_ns)
+                        depth_source_ts_ns = _normalize_source_ts_ns(
+                            _msg_timestamp_ns(dmsg),
+                            clock_offset_ns=clock_offset_ns,
+                            state=ts_norm_state,
+                        )
                         count = max(1, (len(payload) + max_payload - 1) // max_payload)
                         t_send0 = time.perf_counter()
                         for idx in range(count):
                             chunk = payload[idx * max_payload : (idx + 1) * max_payload]
                             hdr = HDR_DPT.pack(
                                 MAGIC_DPT,
-                                depth_seq,
+                                packet_seq,
                                 idx,
                                 count,
-                                source_ts_ns,
+                                depth_source_ts_ns,
                                 depth.shape[1],
                                 depth.shape[0],
                                 comp_id,
@@ -471,7 +566,7 @@ def main() -> int:
                                 "timestamp_ns": time.time_ns(),
                                 "elapsed_s": elapsed_s(start_mono_s),
                                 "event": "depth_send",
-                                "seq": depth_seq,
+                                "seq": packet_seq,
                                 "compression": compressor.mode,
                                 "raw_bytes": len(raw),
                                 "compressed_bytes": len(payload),
@@ -480,11 +575,11 @@ def main() -> int:
                                 "packet_count": count,
                                 "packet_bytes": packet_bytes,
                                 "drained_count": depth_drained,
-                                "source_ts_ns": source_ts_ns,
+                                "source_ts_ns": depth_source_ts_ns,
                                 "clock_offset_ns": clock_offset_ns,
                             }
                         )
-                        depth_seq = (depth_seq + 1) & 0xFFFFFFFF
+                        depth_seq = (packet_seq + 1) & 0xFFFFFFFF
                     next_depth_t += depth_period
 
                 if time.monotonic() - progress_last >= 1.0:
