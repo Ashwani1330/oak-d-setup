@@ -1,0 +1,35 @@
+# Start MediaMTX on the receiver/PC if needed
+./camera-edge/mediamtx.exe camera-edge/mediamtx.yml
+
+# Inspect the active profile without running
+python camera-edge/edge_rgb_depth_sender.py --profile wired_lz4 --print-config
+python camera-edge/benchmark_receiver.py --profile wired_lz4 --print-config
+
+# Main transport benchmark example
+# Use the same --run-id on both machines so the artifacts line up later.
+python camera-edge/benchmark_receiver.py --profile wired_lz4 --run-id 20260404_wired_lz4
+python camera-edge/edge_rgb_depth_sender.py --profile wired_lz4 --run-id 20260404_wired_lz4
+
+# Compare wired vs wireless by changing only the profile
+python camera-edge/benchmark_receiver.py --profile wireless_lz4 --run-id 20260404_wireless_lz4
+python camera-edge/edge_rgb_depth_sender.py --profile wireless_lz4 --run-id 20260404_wireless_lz4
+
+# Compression comparisons
+python camera-edge/benchmark_receiver.py --profile wired_none --run-id 20260404_wired_none
+python camera-edge/edge_rgb_depth_sender.py --profile wired_none --run-id 20260404_wired_none
+
+python camera-edge/benchmark_receiver.py --profile wired_zstd --run-id 20260404_wired_zstd
+python camera-edge/edge_rgb_depth_sender.py --profile wired_zstd --run-id 20260404_wired_zstd
+
+# Packet overhead microbench
+python camera-edge/benchmark_receiver.py --profile packet_overhead --run-id 20260404_packet_0900
+python camera-edge/edge_rgb_depth_sender.py --profile packet_overhead --run-id 20260404_packet_0900
+
+# Sender-side local baseline
+python camera-edge/edge_rgb_depth_sender.py --profile local_baseline --run-id 20260404_local_baseline
+
+# Quick sanity viewer remains available
+python camera-edge/server_depth_viewer.py
+
+# Generate the offline comparison report after copying sender/receiver runs under the same benchmark_runs root
+python camera-edge/benchmark_report.py

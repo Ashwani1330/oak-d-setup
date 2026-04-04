@@ -1,0 +1,35 @@
+{
+  "bottleneck": "balanced",
+  "compression_backend": "cpu",
+  "depth_frame_budget_ms": 66.66666666666667,
+  "duration_s": 31.516691812999852,
+  "gpu_interpretation": "GPU charts measure host load only; depth compression remains CPU-based.",
+  "host": {
+    "cpu_percent_mean": 8.438888888888888,
+    "cpu_percent_p95": 9.666666666666666,
+    "gpu_util_percent_mean": null,
+    "gpu_util_percent_p95": null,
+    "net_rx_mbps_mean": null,
+    "net_tx_mbps_mean": null,
+    "ping_ms_mean": 7.925322580645162,
+    "ping_ms_p95": 18.1,
+    "sample_count": 31
+  },
+  "network_label": "wired",
+  "profile_name": "wired_none",
+  "role": "sender",
+  "run_id": "20260404_wired_none",
+  "sender": {
+    "compression_ms_mean": 0.007195045050999348,
+    "compression_ratio_mean": 1.0,
+    "depth_bytes_mean": 512000.0,
+    "depth_drained_frames": 1,
+    "depth_frames": 444,
+    "depth_send_fps": 14.087773000872541,
+    "packet_count_mean": 437.0,
+    "rgb_camera_fps": 28.30246287562682,
+    "rgb_drained_frames": 2,
+    "rgb_rtsp_write_fps": 28.30246287562682,
+    "send_ms_mean": 31.895236297261594
+  }
+}

@@ -1,0 +1,2 @@
+timestamp_ns,elapsed_s,role,hostname,platform,nic_name,cpu_percent,mem_used_mb,mem_total_mb,mem_percent,gpu_util_percent,gpu_mem_used_mb,gpu_mem_total_mb,net_tx_mbps,net_rx_mbps,net_bytes_sent,net_bytes_recv,ping_ms,ping_jitter_ms,emc_util_percent
+1775299011216150719,0.001645,receiver,antropi-orin,Linux-5.15.185-tegra-aarch64-with-glibc2.35,Ethernet,,,,,,,,,,,,0.044,,
