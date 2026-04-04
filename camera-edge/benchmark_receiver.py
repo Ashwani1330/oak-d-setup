@@ -30,8 +30,10 @@ from benchmark_sync import ClockSyncServer
 from rgbd_protocol import (
     HDR_CAL,
     HDR_DPT,
+    HDR_RGB,
     MAGIC_CAL,
     MAGIC_DPT,
+    MAGIC_RGB,
     compression_name,
     decompress_blob,
     make_decompressor,
@@ -50,6 +52,9 @@ RECEIVER_FIELDS = [
     "assembly_ms",
     "decompression_ms",
     "latency_ms",
+    "rgb_latency_ms",
+    "fused_ready_latency_ms",
+    "fused_source_skew_ms",
     "rgb_pair_delta_ms",
     "sequence_gap",
     "stale_drops",
@@ -82,13 +87,25 @@ HOST_FIELDS = [
     "ping_ms",
     "ping_jitter_ms",
     "emc_util_percent",
+    "power_mw",
+    "temp_c",
 ]
 
 
-@dataclass(frozen=True)
+@dataclass
 class _RgbFrame:
     recv_mono_s: float
     recv_wall_ns: int
+    width: int
+    height: int
+    sender_index: int | None = None
+    source_ts_ns: int | None = None
+
+
+@dataclass(frozen=True)
+class _RgbMeta:
+    sender_index: int
+    source_ts_ns: int
     width: int
     height: int
 
@@ -112,6 +129,7 @@ class TransportBenchmarkReceiver:
         self.pending: dict[int, dict[str, object]] = {}
         self.threads: list[threading.Thread] = []
         self.sock: socket.socket | None = None
+        self.rgb_meta_sock: socket.socket | None = None
         self.cap = None
         self.calibration_version: int | None = None
         self.prev_complete_seq: int | None = None
@@ -121,10 +139,15 @@ class TransportBenchmarkReceiver:
         self.stale_drops = 0
         self.sequence_gaps = 0
         self.last_latency_ms = 0.0
+        self.last_fused_ready_latency_ms = 0.0
+        backlog = max(4, int(profile.max_rgb_buffer) * 2)
+        self.unmatched_rgb_frames: deque[_RgbFrame] = deque(maxlen=backlog)
+        self.pending_rgb_meta: deque[_RgbMeta] = deque(maxlen=backlog)
 
     def start(self) -> None:
         self.threads = [
             threading.Thread(target=self._rgb_loop, name="benchmark-rgb", daemon=True),
+            threading.Thread(target=self._rgb_meta_loop, name="benchmark-rgb-meta", daemon=True),
             threading.Thread(target=self._depth_loop, name="benchmark-depth", daemon=True),
         ]
         for thread in self.threads:
@@ -138,6 +161,12 @@ class TransportBenchmarkReceiver:
             except Exception:
                 pass
             self.sock = None
+        if self.rgb_meta_sock is not None:
+            try:
+                self.rgb_meta_sock.close()
+            except Exception:
+                pass
+            self.rgb_meta_sock = None
         if self.cap is not None:
             try:
                 self.cap.release()
@@ -155,44 +184,83 @@ class TransportBenchmarkReceiver:
             "stale_drops": int(self.stale_drops),
             "sequence_gaps": int(self.sequence_gaps),
             "last_latency_ms": float(self.last_latency_ms),
+            "last_fused_ready_latency_ms": float(self.last_fused_ready_latency_ms),
         }
+
+    def _open_rtsp_capture(self):
+        ffmpeg_opts = f"rtsp_transport;{self.profile.rtsp_transport}|fflags;nobuffer|flags;low_delay"
+        if not os.environ.get("OPENCV_FFMPEG_CAPTURE_OPTIONS"):
+            os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = ffmpeg_opts
+
+        cap = None
+        try:
+            cap = cv2.VideoCapture(self.profile.rtsp_url, cv2.CAP_FFMPEG)
+        except Exception:
+            cap = None
+        if cap is None or not cap.isOpened():
+            if cap is not None:
+                try:
+                    cap.release()
+                except Exception:
+                    pass
+            cap = cv2.VideoCapture(self.profile.rtsp_url)
+        if cap is None:
+            return None
+        try:
+            cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+        except Exception:
+            pass
+        try:
+            cap.set(cv2.CAP_PROP_OPEN_TIMEOUT_MSEC, 5000)
+            cap.set(cv2.CAP_PROP_READ_TIMEOUT_MSEC, 3000)
+        except Exception:
+            pass
+        if not cap.isOpened():
+            try:
+                cap.release()
+            except Exception:
+                pass
+            return None
+        return cap
 
     def _rgb_loop(self) -> None:
         try:
-            ffmpeg_opts = f"rtsp_transport;{self.profile.rtsp_transport}|fflags;nobuffer|flags;low_delay"
-            if not os.environ.get("OPENCV_FFMPEG_CAPTURE_OPTIONS"):
-                os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = ffmpeg_opts
-
-            try:
-                cap = cv2.VideoCapture(self.profile.rtsp_url, cv2.CAP_FFMPEG)
-            except Exception:
-                cap = None
-            if cap is None or not cap.isOpened():
+            warned_waiting = False
+            cap = None
+            while not self.stop_event.is_set():
+                cap = self._open_rtsp_capture()
                 if cap is not None:
-                    try:
-                        cap.release()
-                    except Exception:
-                        pass
-                cap = cv2.VideoCapture(self.profile.rtsp_url)
+                    break
+                if not warned_waiting:
+                    print(f"[receiver] waiting for RTSP publisher at {self.profile.rtsp_url} ...")
+                    warned_waiting = True
+                time.sleep(1.0)
+            if self.stop_event.is_set():
+                return
             self.cap = cap
-            try:
-                cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-            except Exception:
-                pass
-            try:
-                cap.set(cv2.CAP_PROP_OPEN_TIMEOUT_MSEC, 5000)
-                cap.set(cv2.CAP_PROP_READ_TIMEOUT_MSEC, 3000)
-            except Exception:
-                pass
-            if not cap.isOpened():
-                raise RuntimeError(f"Failed to open RTSP stream: {self.profile.rtsp_url}")
+            print(f"[receiver] RTSP connected: {self.profile.rtsp_url}")
 
             while not self.stop_event.is_set():
                 ok, frame_bgr = cap.read()
                 recv_mono_s = time.monotonic()
                 recv_wall_ns = time.time_ns()
                 if not ok or frame_bgr is None:
-                    time.sleep(0.01)
+                    try:
+                        cap.release()
+                    except Exception:
+                        pass
+                    self.cap = None
+                    print(f"[receiver] RTSP read stalled; retrying {self.profile.rtsp_url} ...")
+                    cap = None
+                    while not self.stop_event.is_set():
+                        cap = self._open_rtsp_capture()
+                        if cap is not None:
+                            self.cap = cap
+                            print(f"[receiver] RTSP reconnected: {self.profile.rtsp_url}")
+                            break
+                        time.sleep(1.0)
+                    if cap is None:
+                        return
                     continue
                 height, width = frame_bgr.shape[:2]
                 rgb_msg = _RgbFrame(
@@ -201,8 +269,7 @@ class TransportBenchmarkReceiver:
                     width=int(width),
                     height=int(height),
                 )
-                with self.rgb_lock:
-                    self.rgb_history.append(rgb_msg)
+                self._register_rgb_frame(rgb_msg)
                 self.rgb_frames += 1
                 self.record_metric(
                     {
@@ -215,6 +282,38 @@ class TransportBenchmarkReceiver:
                 )
         except Exception as exc:
             self.fatal_error = f"RGB loop failed: {exc}"
+            self.stop_event.set()
+
+    def _rgb_meta_loop(self) -> None:
+        try:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, int(self.profile.socket_rcvbuf))
+            sock.bind((self.profile.bind_ip, int(self.profile.rgb_meta_port)))
+            sock.settimeout(0.5)
+            self.rgb_meta_sock = sock
+
+            while not self.stop_event.is_set():
+                try:
+                    data, _ = sock.recvfrom(4096)
+                except socket.timeout:
+                    continue
+                except OSError:
+                    if self.stop_event.is_set():
+                        break
+                    raise
+                if len(data) < HDR_RGB.size or data[:4] != MAGIC_RGB:
+                    continue
+                _magic, sender_index, source_ts_ns, width, height = HDR_RGB.unpack_from(data, 0)
+                self._register_rgb_meta(
+                    _RgbMeta(
+                        sender_index=int(sender_index),
+                        source_ts_ns=int(source_ts_ns),
+                        width=int(width),
+                        height=int(height),
+                    )
+                )
+        except Exception as exc:
+            self.fatal_error = f"RGB meta loop failed: {exc}"
             self.stop_event.set()
 
     def _depth_loop(self) -> None:
@@ -300,17 +399,36 @@ class TransportBenchmarkReceiver:
                 if len(raw) < expected:
                     continue
 
-                pair_delta_ms, rgb_width, rgb_height = self._pair_rgb(float(recv_mono_s))
+                recv_wall_ns = time.time_ns()
+                rgb_match = self._pair_rgb(float(recv_mono_s))
+                pair_delta_ms = None
+                rgb_width = None
+                rgb_height = None
+                rgb_latency_ms = None
+                fused_ready_latency_ms = None
+                fused_source_skew_ms = None
+                if rgb_match is not None:
+                    pair_delta_ms = abs(float(recv_mono_s) - float(rgb_match.recv_mono_s)) * 1000.0
+                    rgb_width = int(rgb_match.width)
+                    rgb_height = int(rgb_match.height)
+                    if rgb_match.source_ts_ns is not None:
+                        rgb_latency_ms = (int(rgb_match.recv_wall_ns) - int(rgb_match.source_ts_ns)) / 1e6
+                        fused_source_skew_ms = abs(int(state["ts_ns"]) - int(rgb_match.source_ts_ns)) / 1e6
+                        fused_ready_wall_ns = max(int(recv_wall_ns), int(rgb_match.recv_wall_ns))
+                        fused_source_ts_ns = max(int(state["ts_ns"]), int(rgb_match.source_ts_ns))
+                        fused_ready_latency_ms = (int(fused_ready_wall_ns) - int(fused_source_ts_ns)) / 1e6
                 gap = 0
                 if self.prev_complete_seq is not None:
                     gap = max(0, int(seq) - int(self.prev_complete_seq) - 1)
                     self.sequence_gaps += gap
                 self.prev_complete_seq = int(seq)
                 self.depth_frames += 1
-                self.last_latency_ms = (time.time_ns() - int(state["ts_ns"])) / 1e6
+                self.last_latency_ms = (int(recv_wall_ns) - int(state["ts_ns"])) / 1e6
+                if fused_ready_latency_ms is not None:
+                    self.last_fused_ready_latency_ms = float(fused_ready_latency_ms)
                 self.record_metric(
                     {
-                        "timestamp_ns": time.time_ns(),
+                        "timestamp_ns": recv_wall_ns,
                         "elapsed_s": elapsed_s(self.start_mono_s),
                         "event": "depth_receive",
                         "seq": int(seq),
@@ -321,6 +439,9 @@ class TransportBenchmarkReceiver:
                         "assembly_ms": (float(recv_mono_s) - float(state["t0"])) * 1000.0,
                         "decompression_ms": decomp_ms,
                         "latency_ms": self.last_latency_ms,
+                        "rgb_latency_ms": rgb_latency_ms,
+                        "fused_ready_latency_ms": fused_ready_latency_ms,
+                        "fused_source_skew_ms": fused_source_skew_ms,
                         "rgb_pair_delta_ms": pair_delta_ms,
                         "sequence_gap": gap,
                         "stale_drops": 0,
@@ -360,6 +481,9 @@ class TransportBenchmarkReceiver:
                     "assembly_ms": None,
                     "decompression_ms": None,
                     "latency_ms": None,
+                    "rgb_latency_ms": None,
+                    "fused_ready_latency_ms": None,
+                    "fused_source_skew_ms": None,
                     "rgb_pair_delta_ms": None,
                     "sequence_gap": 0,
                     "stale_drops": 1,
@@ -370,13 +494,34 @@ class TransportBenchmarkReceiver:
                 }
             )
 
-    def _pair_rgb(self, recv_mono_s: float) -> tuple[float | None, int | None, int | None]:
+    def _register_rgb_frame(self, frame: _RgbFrame) -> None:
+        with self.rgb_lock:
+            if self.pending_rgb_meta:
+                self._apply_rgb_meta_locked(frame, self.pending_rgb_meta.popleft())
+            else:
+                self.unmatched_rgb_frames.append(frame)
+            self.rgb_history.append(frame)
+
+    def _register_rgb_meta(self, meta: _RgbMeta) -> None:
+        with self.rgb_lock:
+            if self.unmatched_rgb_frames:
+                self._apply_rgb_meta_locked(self.unmatched_rgb_frames.popleft(), meta)
+            else:
+                self.pending_rgb_meta.append(meta)
+
+    def _apply_rgb_meta_locked(self, frame: _RgbFrame, meta: _RgbMeta) -> None:
+        frame.sender_index = int(meta.sender_index)
+        frame.source_ts_ns = int(meta.source_ts_ns)
+        if frame.width <= 0:
+            frame.width = int(meta.width)
+        if frame.height <= 0:
+            frame.height = int(meta.height)
+
+    def _pair_rgb(self, recv_mono_s: float) -> _RgbFrame | None:
         with self.rgb_lock:
             if not self.rgb_history:
-                return None, None, None
-            best = min(self.rgb_history, key=lambda msg: abs(float(msg.recv_mono_s) - float(recv_mono_s)))
-        delta_ms = abs(float(recv_mono_s) - float(best.recv_mono_s)) * 1000.0
-        return delta_ms, int(best.width), int(best.height)
+                return None
+            return min(self.rgb_history, key=lambda msg: abs(float(msg.recv_mono_s) - float(recv_mono_s)))
 
 
 def parse_args() -> argparse.Namespace:
@@ -447,6 +592,7 @@ def main() -> int:
     print(f"[receiver] profile={profile.name} run_id={context.run_id}")
     print(f"[receiver] RTSP <- {profile.rtsp_url} ({profile.rtsp_transport})")
     print(f"[receiver] UDP depth <- {profile.bind_ip}:{profile.depth_port}")
+    print(f"[receiver] RGB meta <- {profile.bind_ip}:{profile.rgb_meta_port}")
     print(f"[receiver] Clock sync server <- {profile.bind_ip}:{profile.control_port}")
 
     try:
@@ -464,7 +610,8 @@ def main() -> int:
                 print(
                     f"[receiver] rgb_read_fps={status['rgb_frames'] / live_elapsed:.2f} "
                     f"depth_receive_fps={status['depth_frames'] / live_elapsed:.2f} "
-                    f"latency_ms={status['last_latency_ms']:.1f} "
+                    f"depth_latency_ms={status['last_latency_ms']:.1f} "
+                    f"fused_latency_ms={status['last_fused_ready_latency_ms']:.1f} "
                     f"stale={status['stale_drops']} gaps={status['sequence_gaps']}"
                 )
                 last_print = time.monotonic()

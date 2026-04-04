@@ -168,6 +168,7 @@ def classify_bottleneck(summary: Mapping[str, Any]) -> str:
     gpu_pct = _pick_number(host, "gpu_util_percent_mean")
     tx_mbps = _pick_number(host, "net_tx_mbps_mean")
     rx_mbps = _pick_number(host, "net_rx_mbps_mean")
+    bandwidth = float(summary.get("profile", {}).get("nic_bandwidth_mbps", 100.0))
 
     if stale_rate is not None and stale_rate >= 0.05:
         return "network-bound"
@@ -184,9 +185,9 @@ def classify_bottleneck(summary: Mapping[str, Any]) -> str:
         return "jetson-compute-bound" if sender else "receiver-bound"
     if gpu_pct is not None and gpu_pct >= 85.0:
         return "jetson-compute-bound" if sender else "receiver-bound"
-    if tx_mbps is not None and tx_mbps >= 0.85 * 100.0:
+    if tx_mbps is not None and tx_mbps >= 0.85 * bandwidth:
         return "network-bound"
-    if rx_mbps is not None and rx_mbps >= 0.85 * 100.0:
+    if rx_mbps is not None and rx_mbps >= 0.85 * bandwidth:
         return "network-bound"
     if decomp_ms is not None and comp_ms is not None and decomp_ms > comp_ms:
         return "receiver-bound"
@@ -199,6 +200,8 @@ def summarize_host_rows(rows: list[Mapping[str, Any]]) -> dict[str, Any]:
     ping = metric_stats(_numbers(rows, "ping_ms"))
     tx = metric_stats(_numbers(rows, "net_tx_mbps"))
     rx = metric_stats(_numbers(rows, "net_rx_mbps"))
+    pwr = metric_stats(_numbers(rows, "power_mw"))
+    tmp = metric_stats(_numbers(rows, "temp_c"))
     return {
         "sample_count": len(rows),
         "cpu_percent_mean": cpu["mean"],
@@ -209,6 +212,8 @@ def summarize_host_rows(rows: list[Mapping[str, Any]]) -> dict[str, Any]:
         "ping_ms_p95": ping["p95"],
         "net_tx_mbps_mean": tx["mean"],
         "net_rx_mbps_mean": rx["mean"],
+        "power_mw_mean": pwr["mean"],
+        "temp_c_mean": tmp["mean"],
     }
 
 
@@ -255,6 +260,12 @@ def summarize_receiver_rows(rows: list[Mapping[str, Any]], duration_s: float | N
         "decompression_ms_mean": metric_stats(_numbers(depth_rows, "decompression_ms"))["mean"],
         "latency_ms_mean": metric_stats(_numbers(depth_rows, "latency_ms"))["mean"],
         "latency_ms_p95": metric_stats(_numbers(depth_rows, "latency_ms"))["p95"],
+        "rgb_latency_ms_mean": metric_stats(_numbers(depth_rows, "rgb_latency_ms"))["mean"],
+        "rgb_latency_ms_p95": metric_stats(_numbers(depth_rows, "rgb_latency_ms"))["p95"],
+        "fused_ready_latency_ms_mean": metric_stats(_numbers(depth_rows, "fused_ready_latency_ms"))["mean"],
+        "fused_ready_latency_ms_p95": metric_stats(_numbers(depth_rows, "fused_ready_latency_ms"))["p95"],
+        "fused_source_skew_ms_mean": metric_stats(_numbers(depth_rows, "fused_source_skew_ms"))["mean"],
+        "fused_source_skew_ms_p95": metric_stats(_numbers(depth_rows, "fused_source_skew_ms"))["p95"],
         "rgb_pair_delta_ms_mean": metric_stats(_numbers(depth_rows, "rgb_pair_delta_ms"))["mean"],
         "stale_depth_drops": stale_drops,
         "sequence_gaps": seq_gaps,

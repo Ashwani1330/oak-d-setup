@@ -41,6 +41,8 @@ class BenchmarkProfile:
     depth_host: str = "127.0.0.1"
     depth_port: int = 9000
     control_port: int = 9001
+    rgb_meta_port: int = 9002
+    nic_bandwidth_mbps: float = 100.0
 
     width: int = 640
     height: int = 400
@@ -101,6 +103,8 @@ def _base_profile() -> BenchmarkProfile:
         depth_host=SERVER_PC_WIFI_IP,
         depth_port=9000,
         control_port=9001,
+        rgb_meta_port=9002,
+        nic_bandwidth_mbps=100.0,
         width=640,
         height=400,
         fps=30,
@@ -144,6 +148,7 @@ def build_profiles() -> dict[str, BenchmarkProfile]:
             rtsp_url=f"rtsp://{SERVER_PC_WIRED_IP}:8554/oak",
             depth_host=SERVER_PC_WIRED_IP,
             depth_comp="none",
+            nic_bandwidth_mbps=1000.0,
             run_notes="Main comparison: wired Ethernet without depth compression.",
         ),
         "wired_lz4": _with_name(
@@ -160,6 +165,7 @@ def build_profiles() -> dict[str, BenchmarkProfile]:
             rtsp_url=f"rtsp://{SERVER_PC_WIRED_IP}:8554/oak",
             depth_host=SERVER_PC_WIRED_IP,
             depth_comp="lz4",
+            nic_bandwidth_mbps=1000.0,
             run_notes="Main comparison: wired Ethernet with LZ4 depth compression.",
         ),
         "wired_zstd": _with_name(
@@ -176,6 +182,7 @@ def build_profiles() -> dict[str, BenchmarkProfile]:
             rtsp_url=f"rtsp://{SERVER_PC_WIRED_IP}:8554/oak",
             depth_host=SERVER_PC_WIRED_IP,
             depth_comp="zstd",
+            nic_bandwidth_mbps=1000.0,
             run_notes="Main comparison: wired Ethernet with Zstd depth compression.",
         ),
         "wireless_none": _with_name(

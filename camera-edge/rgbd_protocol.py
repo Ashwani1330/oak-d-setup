@@ -7,9 +7,11 @@ import zlib
 
 MAGIC_DPT = b"DPT0"
 MAGIC_CAL = b"CAL0"
+MAGIC_RGB = b"RGB0"
 
 HDR_DPT = struct.Struct("<4sIHHQHHBH")
 HDR_CAL = struct.Struct("<4sBQHH")
+HDR_RGB = struct.Struct("<4sIQHH")
 CAL_FLOATS = struct.Struct("<30fB")
 
 COMP_NONE = 0
@@ -40,18 +42,16 @@ class DepthCompressor:
         if self.mode == "zstd":
             try:
                 import zstandard as zstd
-
                 self._zstd_c = zstd.ZstdCompressor(level=1)
-            except Exception:
-                self.mode = "none"
+            except ImportError:
+                raise RuntimeError("zstandard (zstd) is not installed but was requested by the profile.")
 
         elif self.mode == "lz4":
             try:
                 import lz4.frame
-
                 self._lz4 = lz4.frame
-            except Exception:
-                self.mode = "none"
+            except ImportError:
+                raise RuntimeError("lz4 is not installed but was requested by the profile.")
 
         elif self.mode != "zlib":
             self.mode = "none"

@@ -28,7 +28,7 @@ from benchmark_runtime import (
     write_manifest,
 )
 from benchmark_sync import estimate_clock_offset
-from rgbd_protocol import CAL_FLOATS, HDR_CAL, HDR_DPT, MAGIC_CAL, MAGIC_DPT, UNITS_CM, DepthCompressor
+from rgbd_protocol import CAL_FLOATS, HDR_CAL, HDR_DPT, HDR_RGB, MAGIC_CAL, MAGIC_DPT, MAGIC_RGB, UNITS_CM, DepthCompressor
 
 
 quit_event = threading.Event()
@@ -74,6 +74,8 @@ HOST_FIELDS = [
     "ping_ms",
     "ping_jitter_ms",
     "emc_util_percent",
+    "power_mw",
+    "temp_c",
 ]
 
 
@@ -220,6 +222,10 @@ def parse_args() -> argparse.Namespace:
     return ap.parse_args()
 
 
+def sender_wall_ns(clock_offset_ns: int) -> int:
+    return time.time_ns() + int(clock_offset_ns)
+
+
 def main() -> int:
     args = parse_args()
     profile = get_profile(args.profile)
@@ -281,6 +287,7 @@ def main() -> int:
     print(f"[sender] profile={profile.name} run_id={context.run_id}")
     print(f"[sender] RTSP -> {profile.rtsp_url} ({profile.rtsp_transport})")
     print(f"[sender] Depth UDP -> {dest} comp={profile.depth_comp} packet_bytes={packet_bytes}")
+    print(f"[sender] RGB meta UDP -> {(profile.depth_host, int(profile.rgb_meta_port))}")
     if clock_sync is not None:
         print(
             f"[sender] clock sync offset_ns={clock_sync.offset_ns} rtt_ms={clock_sync.rtt_ms:.3f} "
@@ -403,6 +410,7 @@ def main() -> int:
                         print("[sender] ffmpeg exited unexpectedly.")
                         break
                     payload = pkt.getData().tobytes()
+                    rgb_source_ts_ns = sender_wall_ns(clock_offset_ns)
                     t0 = time.perf_counter()
                     try:
                         assert proc.stdin is not None
@@ -411,6 +419,11 @@ def main() -> int:
                         print("[sender] ffmpeg pipe closed.")
                         break
                     write_ms = (time.perf_counter() - t0) * 1000.0
+                    try:
+                        meta = HDR_RGB.pack(MAGIC_RGB, rgb_write_index, rgb_source_ts_ns, profile.width, profile.height)
+                        udp.sendto(meta, (profile.depth_host, int(profile.rgb_meta_port)))
+                    except Exception as exc:
+                        print(f"[sender] WARN: failed to send RGB metadata for frame {rgb_write_index}: {exc}")
                     record_sender(
                         {
                             "timestamp_ns": time.time_ns(),
@@ -420,6 +433,8 @@ def main() -> int:
                             "ffmpeg_write_bytes": len(payload),
                             "ffmpeg_write_ms": write_ms,
                             "drained_count": rgb_drained,
+                            "source_ts_ns": rgb_source_ts_ns,
+                            "clock_offset_ns": clock_offset_ns,
                         }
                     )
                     rgb_write_index += 1
@@ -433,7 +448,7 @@ def main() -> int:
                         payload, comp_id = compressor.compress(raw)
                         compression_ms = (time.perf_counter() - t_comp0) * 1000.0
 
-                        source_ts_ns = time.time_ns() + int(clock_offset_ns)
+                        source_ts_ns = sender_wall_ns(clock_offset_ns)
                         count = max(1, (len(payload) + max_payload - 1) // max_payload)
                         t_send0 = time.perf_counter()
                         for idx in range(count):
