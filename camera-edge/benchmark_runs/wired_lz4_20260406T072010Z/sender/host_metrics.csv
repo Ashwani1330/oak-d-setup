@@ -1,0 +1,10 @@
+timestamp_ns,elapsed_s,role,hostname,platform,nic_name,cpu_percent,mem_used_mb,mem_total_mb,mem_percent,gpu_util_percent,gpu_mem_used_mb,gpu_mem_total_mb,net_tx_mbps,net_rx_mbps,net_bytes_sent,net_bytes_recv,ping_ms,ping_jitter_ms,emc_util_percent,power_mw,temp_c
+1775460018504163724,0.002046,sender,antropi-orin,Linux-5.15.185-tegra-aarch64-with-glibc2.35,enP8p1s0,6.166667,3322.0,7607.0,,,,,,,,,,,,,
+1775460020534753670,2.032637,sender,antropi-orin,Linux-5.15.185-tegra-aarch64-with-glibc2.35,enP8p1s0,6.5,3312.0,7607.0,,,,,,,,,,,,,
+1775460022564688476,4.062572,sender,antropi-orin,Linux-5.15.185-tegra-aarch64-with-glibc2.35,enP8p1s0,4.5,3313.0,7607.0,,,,,,,,,,,,,
+1775460024595972348,6.093857,sender,antropi-orin,Linux-5.15.185-tegra-aarch64-with-glibc2.35,enP8p1s0,2.166667,3312.0,7607.0,,,,,,,,,,,,,
+1775460026626203970,8.124089,sender,antropi-orin,Linux-5.15.185-tegra-aarch64-with-glibc2.35,enP8p1s0,0.666667,3315.0,7607.0,,,,,,,,,,,,,
+1775460028657246133,10.155131,sender,antropi-orin,Linux-5.15.185-tegra-aarch64-with-glibc2.35,enP8p1s0,0.833333,3315.0,7607.0,,,,,,,,,,,,,
+1775460030687387639,12.185273,sender,antropi-orin,Linux-5.15.185-tegra-aarch64-with-glibc2.35,enP8p1s0,1.0,3316.0,7607.0,,,,,,,,,,,,,
+1775460032715474215,14.213359,sender,antropi-orin,Linux-5.15.185-tegra-aarch64-with-glibc2.35,enP8p1s0,4.0,3316.0,7607.0,,,,,,,,,,,,,
+1775460033748258167,15.246143,sender,antropi-orin,Linux-5.15.185-tegra-aarch64-with-glibc2.35,enP8p1s0,4.0,3316.0,7607.0,,,,,,,,,,,,,

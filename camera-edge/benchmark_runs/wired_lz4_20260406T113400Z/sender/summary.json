@@ -1,0 +1,37 @@
+{
+  "bottleneck": "balanced",
+  "compression_backend": "cpu",
+  "depth_frame_budget_ms": 66.66666666666667,
+  "duration_s": 354.5376917589999,
+  "gpu_interpretation": "GPU charts measure host load only; depth compression remains CPU-based.",
+  "host": {
+    "cpu_percent_mean": 4.859572400388727,
+    "cpu_percent_p95": 5.833333333333333,
+    "gpu_util_percent_mean": null,
+    "gpu_util_percent_p95": null,
+    "net_rx_mbps_mean": null,
+    "net_tx_mbps_mean": null,
+    "ping_ms_mean": 3.620142441860465,
+    "ping_ms_p95": 9.913499999999996,
+    "power_mw_mean": null,
+    "sample_count": 344,
+    "temp_c_mean": null
+  },
+  "network_label": "wired",
+  "profile_name": "wired_lz4",
+  "role": "sender",
+  "run_id": "wired_lz4_20260406T113400Z",
+  "sender": {
+    "compression_ms_mean": 2.434851249334415,
+    "compression_ratio_mean": 0.2678719252126654,
+    "depth_bytes_mean": 137150.4257088847,
+    "depth_drained_frames": 1,
+    "depth_frames": 5290,
+    "depth_send_fps": 14.920839512871662,
+    "packet_count_mean": 117.42457466918715,
+    "rgb_camera_fps": 29.861423047783042,
+    "rgb_drained_frames": 1,
+    "rgb_rtsp_write_fps": 29.861423047783042,
+    "send_ms_mean": 1.5482589797731519
+  }
+}
