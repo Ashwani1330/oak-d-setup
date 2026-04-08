@@ -179,7 +179,7 @@ DEFAULT_SAM_RUNNER_CONFIG = SamRunnerConfig()
 
 @dataclass
 class CameraEdgeRuntimeConfig:
-    active_profile_name: str = "wired_zstd"
+    active_profile_name: str = "wired_lz4"
     server_pc_wifi_ip: str = MQTT_BROKER_IP
     server_pc_wired_ip: str = SERVER_PC_IP
     orin_wifi_ip: str = "192.168.1.211"
