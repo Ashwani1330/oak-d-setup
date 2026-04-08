@@ -1,1 +1,0 @@
-timestamp_ns,elapsed_s,event,index,seq,compression,raw_bytes,compressed_bytes,compression_ms,send_ms,packet_count,packet_bytes,ffmpeg_write_bytes,ffmpeg_write_ms,drained_count,source_ts_ns,clock_offset_ns
